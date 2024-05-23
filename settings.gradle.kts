@@ -14,7 +14,6 @@ dependencyResolutionManagement {
         create("deps") {
             version("detekt", "1.23.6")
             version("kotlin", "1.9.24")
-            version("nexus", "1.1.0")
             version("test_logger", "3.2.0")
             version("kotlin_serialization_json", "1.6.3")
             version("slf4j", "2.0.13")
@@ -42,7 +41,6 @@ dependencyResolutionManagement {
 
             plugin("test_logger", "com.adarshr.test-logger").versionRef("test_logger")
             plugin("detekt", "io.gitlab.arturbosch.detekt").versionRef("detekt")
-            plugin("nexus", "io.github.gradle-nexus.publish-plugin").versionRef("nexus")
             plugin("kotlin_serialization", "org.jetbrains.kotlin.plugin.serialization").versionRef("kotlin")
 
             bundle(
