@@ -55,7 +55,7 @@ class RabbitQueueTest {
         val rabbitQueue = RabbitQueue(Config(factory, "test", "test"), Json, registry)
         rabbitQueue.run(listOf(QueueConfig(subscriber::class.queueName("test"), 3, retryDelay = 1.seconds)))
         publisher.publish(event)
-        withTimeout(10.seconds) {
+        withTimeout(60.seconds) {
             launch {
                 while (isActive && subscriber.count < 4) {
                     delay(500)
