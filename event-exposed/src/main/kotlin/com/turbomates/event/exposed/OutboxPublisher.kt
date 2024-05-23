@@ -5,26 +5,40 @@ import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.util.UUID
 import kotlin.time.Duration
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.dao.id.UUIDTable
 import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.sql.Op
+import org.jetbrains.exposed.sql.SchemaUtils.withDataBaseLock
+import org.jetbrains.exposed.sql.SqlExpressionBuilder
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
 import org.jetbrains.exposed.sql.javatime.datetime
+import org.jetbrains.exposed.sql.json.jsonb
 import org.jetbrains.exposed.sql.select
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 import org.slf4j.LoggerFactory
 
-class OutboxPublisher(private val database: Database, private val publishers: List<Publisher>, private val delay: Duration = Duration.parse("1s")) :
-    CoroutineScope by CoroutineScope(Dispatchers.IO) {
+class OutboxPublisher(
+    private val database: Database,
+    private val publishers: List<Publisher>,
+    private val limit: Int = 1000,
+    private val delay: Duration = Duration.parse("1s"),
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
+) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    suspend fun start() = launch {
+    fun start() = launch {
         while (isActive) {
             try {
-                val events = load()
+                val events = load(limit)
                 events.forEach { event ->
                     try {
                         publish(event.id)
@@ -45,25 +59,25 @@ class OutboxPublisher(private val database: Database, private val publishers: Li
         }
     }
 
-    private suspend fun load(limit: Int = 100): List<PublicEvent> {
-        return newSuspendedTransaction(Dispatchers.IO, database) {
-            Events.select { Events.publishedAt.isNull() }.limit(limit).map {
-                PublicEvent(it[Events.event], it[Events.id].value)
+    private fun load(limit: Int): List<PublicEvent> {
+        return transaction(database) {
+            EventsTable.selectAll().where { EventsTable.publishedAt.isNull() }.limit(limit).map {
+                PublicEvent(it[EventsTable.event], it[EventsTable.id].value)
             }
         }
     }
 
-    private suspend fun publish(id: UUID) {
-        newSuspendedTransaction(Dispatchers.IO, database) {
-            Events.update({ Events.id eq id }) {
+    private fun publish(id: UUID) {
+        transaction(database) {
+            EventsTable.update({ EventsTable.id eq id }) {
                 it[publishedAt] = LocalDateTime.now()
             }
         }
     }
 
-    private suspend fun resetPublish(id: UUID) {
-        newSuspendedTransaction(Dispatchers.IO, database) {
-            Events.update({ Events.id eq id }) {
+    private fun resetPublish(id: UUID) {
+        transaction(database) {
+            EventsTable.update({ EventsTable.id eq id }) {
                 it[publishedAt] = null
             }
         }
@@ -71,8 +85,8 @@ class OutboxPublisher(private val database: Database, private val publishers: Li
 }
 
 
-internal object Events : UUIDTable("outbox_events") {
-    val event = jsonb("event", EventSerializer)
+internal object EventsTable : UUIDTable("outbox_events") {
+    val event = jsonb("event", Json, EventSerializer)
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
 }

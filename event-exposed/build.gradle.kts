@@ -15,10 +15,11 @@ dependencies {
     implementation(deps.slf4j)
     implementation(deps.bundles.exposed)
     implementation(deps.postgresql.jdbc)
-
     api(project(":event"))
-    testImplementation("org.junit.jupiter:junit-jupiter-api:5.8.1")
-    testRuntimeOnly("org.junit.jupiter:junit-jupiter-engine:5.8.1")
+    testImplementation(kotlin("test"))
+    testImplementation(deps.testcontainers.core)
+    testImplementation(deps.testcontainers.postgres)
+    testImplementation(deps.kotlin.coroutines.test)
 }
 
 tasks.getByName<Test>("test") {

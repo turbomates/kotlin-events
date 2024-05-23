@@ -1,0 +1,254 @@
+build:
+  maxIssues: 0
+
+coroutines:
+  active: true
+  GlobalCoroutineUsage:
+    active: true
+  RedundantSuspendModifier:
+    active: true
+  SleepInsteadOfDelay:
+    active: true
+  SuspendFunWithFlowReturnType:
+    active: true
+
+complexity:
+  LargeClass:
+    active: true
+    threshold: 400
+  ComplexInterface:
+    active: true
+    threshold: 6
+  ComplexCondition:
+    threshold: 5
+  TooManyFunctions:
+    thresholdInClasses: 25
+    thresholdInFiles: 30
+    thresholdInObjects: 11
+  NestedScopeFunctions:
+    active: true
+    threshold: 2
+  LongMethod:
+    active: true
+    threshold: 60
+    ignoreAnnotated: [ 'Test' ]
+  StringLiteralDuplication:
+    active: true
+    threshold: 2
+    ignoreStringsRegex: '\b(Not yet implemented|default)\b'
+    excludes:
+      - '**/test/**'
+  ReplaceSafeCallChainWithRun:
+    active: true
+  LongParameterList:
+    active: false
+
+exceptions:
+  TooGenericExceptionCaught:
+    allowedExceptionNameRegex: '_|(ignore|expected|logging|transient).*'
+  ObjectExtendsThrowable:
+    active: true
+
+formatting:
+  AnnotationOnSeparateLine:
+    active: true
+  AnnotationSpacing:
+    active: true
+  ArgumentListWrapping:
+    active: true
+    maxLineLength: 140
+  BlockCommentInitialStarAlignment:
+    active: true
+  CommentWrapping:
+    active: true
+  DiscouragedCommentLocation:
+    active: true
+  EnumEntryNameCase:
+    active: true
+  FunctionTypeReferenceSpacing:
+    active: true
+  FunKeywordSpacing:
+    active: true
+  KdocWrapping:
+    active: true
+  ModifierListSpacing:
+    active: true
+  Indentation:
+    indentSize: 4
+  MultiLineIfElse:
+    active: true
+  PackageName:
+    active: true
+  SpacingAroundAngleBrackets:
+    active: true
+  SpacingAroundDoubleColon:
+    active: true
+  SpacingAroundUnaryOperator:
+    active: true
+  SpacingBetweenDeclarationsWithAnnotations:
+    active: true
+  SpacingBetweenDeclarationsWithComments:
+    active: true
+  TypeArgumentListSpacing:
+    active: true
+  UnnecessaryParenthesesBeforeTrailingLambda:
+    active: true
+  NoEmptyFirstLineInMethodBlock:
+    active: true
+  NoWildcardImports:
+    active: true
+    packagesToUseImportOnDemandProperty: ''
+  MaximumLineLength:
+    maxLineLength: 140
+  ParameterListWrapping:
+    active: true
+    maxLineLength: 140
+    autoCorrect: true
+    indentSize: 4
+  NoMultipleSpaces:
+    active: true
+    autoCorrect: true
+
+naming:
+  BooleanPropertyNaming:
+    active: true
+    allowedPattern: '^(is|has|are|should)'
+  ConstructorParameterNaming:
+    active: true
+    excludeClassPattern: 'SchemaObject|ParameterObject|SecuritySchemaObject|PathItemObject'
+  ForbiddenClassName:
+    active: true
+    forbiddenName:
+      - 'Service'
+  FunctionMaxLength:
+    active: true
+    maximumFunctionNameLength: 40
+    excludes:
+      - '**/test/**'
+  FunctionMinLength:
+    active: true
+    minimumFunctionNameLength: 2
+  LambdaParameterNaming:
+    active: true
+  VariableMaxLength:
+    active: true
+  VariableMinLength:
+    active: true
+    minimumVariableNameLength: 2
+  NonBooleanPropertyPrefixedWithIs:
+    active: true
+
+performance:
+  CouldBeSequence:
+    active: true
+  SpreadOperator:
+    active: true
+
+potential-bugs:
+  CastToNullableType:
+    active: true
+  DontDowncastCollectionTypes:
+    active: true
+  ElseCaseInsteadOfExhaustiveWhen:
+    active: true
+  ExitOutsideMain:
+    active: true
+  ImplicitUnitReturnType:
+    active: false
+  MissingPackageDeclaration:
+    active: true
+  NullableToStringCall:
+    active: true
+  NullCheckOnMutableProperty:
+    active: true
+  UnconditionalJumpStatementInLoop:
+    active: true
+  UnsafeCallOnNullableType:
+    active: false
+
+style:
+  CanBeNonNullable:
+    active: true
+  ClassOrdering:
+    active: true
+  CollapsibleIfStatements:
+    active: true
+  DataClassContainsFunctions:
+    active: true
+  DataClassShouldBeImmutable:
+    active: false
+  EqualsOnSignatureLine:
+    active: true
+  ExplicitCollectionElementAccessMethod:
+    active: true
+  MaxLineLength:
+    active: false
+    maxLineLength: 140
+  ForbiddenImport:
+    active: true
+    imports: []
+  ForbiddenMethodCall:
+    active: true
+    methods: []
+  ForbiddenVoid:
+    active: true
+  MagicNumber:
+    active: true
+    ignoreRanges: true
+    ignorePropertyDeclaration: true
+    ignoreNumbers:
+      - '-1'
+      - '0'
+      - '1'
+      - '2'
+      - '3'
+      - '403'
+      - '422'
+      - '200'
+  NoTabs:
+    active: true
+  NullableBooleanCheck:
+    active: true
+  OptionalUnit:
+    active: true
+  OptionalWhenBraces:
+    active: true
+  PreferToOverPairSyntax:
+    active: true
+  RedundantExplicitType:
+    active: true
+  RedundantVisibilityModifierRule:
+    active: true
+  SpacingBetweenPackageAndImports:
+    active: true
+  TrailingWhitespace:
+    active: true
+  UnderscoresInNumericLiterals:
+    active: true
+    acceptableLength: 5
+  UnnecessaryAnnotationUseSiteTarget:
+    active: true
+  UnnecessaryBackticks:
+    active: true
+  UnnecessaryInnerClass:
+    active: true
+  UnnecessaryLet:
+    active: true
+  UnnecessaryParentheses:
+    active: true
+  UntilInsteadOfRangeTo:
+    active: true
+  UnusedImports:
+    active: true
+  UseDataClass:
+    active: true
+  UseIfEmptyOrIfBlank:
+    active: true
+  UseIfInsteadOfWhen:
+    active: true
+  ReturnCount:
+    active: false
+  WildcardImport:
+    active: true
+  UnnecessaryAbstractClass:
+    active: false

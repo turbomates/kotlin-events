@@ -1,0 +1,30 @@
+name: reviewdog
+
+on:
+  pull_request:
+    paths-ignore:
+      - '**.md'
+jobs:
+  linter:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Clone repo
+        uses: actions/checkout@master
+        with:
+          fetch-depth: 1
+      - uses: reviewdog/action-setup@v1
+      - name: Cache Gradle packages
+        uses: actions/cache@v2
+        with:
+          path: ~/.gradle/caches
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
+          restore-keys: ${{ runner.os }}-gradle
+      - name: Run reviewdog
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN}}
+        run: |
+          yq -i '.build.maxIssues = 100000' detekt.yml
+          ./gradlew detektMain && cat build/reports/detekt/main.xml | reviewdog -f=checkstyle -name="detekt-main" -reporter="github-pr-check" -level="error"
+          ./gradlew detektTest && cat build/reports/detekt/test.xml | reviewdog -f=checkstyle -name="detekt-test" -reporter="github-pr-check" -level="error"

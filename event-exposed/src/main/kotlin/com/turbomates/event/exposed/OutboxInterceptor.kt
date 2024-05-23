@@ -8,7 +8,7 @@ import org.jetbrains.exposed.sql.statements.GlobalStatementInterceptor
 import org.jetbrains.exposed.sql.transactions.transactionScope
 
 class OutboxInterceptor : GlobalStatementInterceptor {
-    @Suppress("UNCHECKED_CAST")
+
     override fun beforeCommit(transaction: Transaction) {
         val events = transaction.events.raiseEvents().toList()
         events.save()
@@ -18,10 +18,10 @@ class OutboxInterceptor : GlobalStatementInterceptor {
 val Transaction.events: EventStore by transactionScope { EventStore() }
 internal fun List<Event>.save() {
     val events = this.map { PublicEvent(it) }
-    Events.batchInsert(events) { event ->
-        this[Events.id] = event.id
-        this[Events.event] = event.original
-        this[Events.createdAt] = event.createdAt
+    EventsTable.batchInsert(events) { event ->
+        this[EventsTable.id] = event.id
+        this[EventsTable.event] = event.original
+        this[EventsTable.createdAt] = event.createdAt
     }
     val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent<*>>()
     EventSourcingTable.batchInsert(eventSourcingEvents) { event ->

@@ -1,84 +1,100 @@
 package com.turbomates.event.rabbit
 
-import com.rabbitmq.client.CancelCallback
+import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.Channel
-import com.rabbitmq.client.DeliverCallback
-import com.rabbitmq.client.Delivery
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
+import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.SubscribersRegistry
-import com.turbomates.event.seriazlier.EventSerializer
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
-import org.slf4j.LoggerFactory
 
 class RabbitQueue(
-    private val config: RabbitConfig,
+    private val config: Config,
     private val json: Json,
     private val subscribersRegistry: SubscribersRegistry,
 ) {
-    fun run(queueConfig: List<RabbitQueueConfig> = emptyList()) {
+    val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit = { config, subscribers ->
+        basicConsume(
+            config.queueName,
+            false,
+            ListenerDeliveryCallback(
+                ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
+                config,
+                subscribers,
+                json
+            ),
+            ListenerCancelCallback()
+        )
+    }
+
+    fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
         eventsSubscribers.forEach { eventsSubscriber ->
-            val channel = config.connectionFactory.newConnection().createChannel()
-            val queueName = eventsSubscriber.queueName(config.queuePrefix)
-            channel.queueDeclare(queueName, true, false, false, mapOf())
-            eventsSubscriber.subscribers().forEach { subscriber ->
-                channel.queueBind(queueName, config.exchange, subscriber.key.routeName())
-            }
-            channel.basicConsume(
-                queueName,
-                false,
-                ListenerDeliveryCallback(
-                    channel,
-                    eventsSubscriber.subscribers().associateBy { it.key },
-                    json
-                ),
-                ListenerCancelCallback()
-            )
+            eventsSubscriber.consumers(queuesConfig)
+
         }
-        eventSubscribers.forEach { subscriber ->
-            val channel = config.connectionFactory.newConnection().createChannel()
-            val queueName = subscriber.queueName(config.queuePrefix)
-            channel.queueDeclare(queueName, true, false, false, mapOf())
-            channel.queueBind(queueName, config.exchange, subscriber.key.routeName())
-            channel.basicConsume(
-                queueName,
-                false,
-                ListenerDeliveryCallback(channel, mapOf(subscriber.key to subscriber), json),
-                ListenerCancelCallback()
-            )
+        eventSubscribers.forEach { eventSubscriber ->
+            eventSubscriber.consumers(queuesConfig)
         }
     }
 
-    private class ListenerDeliveryCallback(
-        private val channel: Channel,
-        private val subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
-        private val json: Json
-    ) : DeliverCallback {
-        private val logger by lazy { LoggerFactory.getLogger(javaClass) }
-
-        @Suppress("UNCHECKED_CAST")
-        override fun handle(consumerTag: String, message: Delivery) = runBlocking {
-            try {
-                val eventJsonString = String(message.body)
-                logger.info("Event $eventJsonString accepted ")
-                val event = json.decodeFromString(EventSerializer, eventJsonString)
-
-                val callback = subscribers[event.key] as? EventSubscriber<Event>
-                callback?.invoke(event)
-                channel.basicAck(message.envelope.deliveryTag, false)
-            } catch (logging: Throwable) {
-                channel.basicNack(message.envelope.deliveryTag, false, true)
-                logger.error("Broken event: ${String(message.body)}. Message: ${logging.message}. Stacktrace: ${logging.printStackTrace()}")
-            }
-        }
+    private fun channel(queueConfig: QueueConfig): Channel {
+        val channel = config.connectionFactory.newConnection().createChannel()
+        return channel.apply { queueConfig.dlxQueue() }
     }
 
-    private class ListenerCancelCallback : CancelCallback {
-        private val logger by lazy { LoggerFactory.getLogger(javaClass) }
-        override fun handle(consumerTag: String?) {
-            logger.error("Listener was cancelled $consumerTag")
+    private fun EventSubscriber<out Event>.consumers(queuesConfig: List<QueueConfig>) {
+        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(queueName(config.queuePrefix))
+        val channel = channel(queueConfig)
+        channel.run { queueConfig.dlxQueue() }
+        channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
+        channel.consumer(queueConfig, mapOf(key to this))
+    }
+
+    private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>) {
+        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(queueName(config.queuePrefix))
+        val channel = channel(queueConfig)
+        subscribers().forEach { subscriber ->
+            channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
         }
+        channel.consumer(queueConfig, subscribers().associateBy { it.key })
+    }
+
+    context(Channel)
+            private fun QueueConfig.dlxQueue() {
+        if (!isRetryEnabled()) {
+            queueDeclare(queueName, true, false, false, mapOf())
+            return
+        }
+        val exchange = this@RabbitQueue.config.exchange.dlx()
+        exchangeDeclare(exchange, BuiltinExchangeType.DIRECT, true)
+        queueDeclare(
+            queueName, true, false, false, mapOf(
+                "x-dead-letter-exchange" to exchange,
+                "x-dead-letter-routing-key" to queueName.dlx(),
+            )
+        )
+        queueBind(queueName, config.exchange.dlx(), queueName)
+
+        queueDeclare(
+            queueName.dlx(), true, false, false, mapOf(
+                "x-dead-letter-exchange" to exchange,
+                "x-dead-letter-routing-key" to queueName,
+                "x-message-ttl" to retryDelay.inWholeMilliseconds
+            )
+        )
+        queueBind(queueName.dlx(), config.exchange.dlx(), queueName.dlx())
+
+        queueDeclare(queueName.pl(), true, false, false, mapOf())
+        queueBind(queueName.pl(), config.exchange, queueName.pl())
+    }
+
+    data class ChannelInfo(val queue: String, val exchange: String, val channel: Channel)
+    companion object {
+        const val DLX_POSTFIX = "_dlx"
+        const val PARKING_LOT_POSTFIX = "_pl"
     }
 }
+
+internal fun String.dlx(): String = this + RabbitQueue.DLX_POSTFIX
+internal fun String.pl(): String = this + RabbitQueue.PARKING_LOT_POSTFIX

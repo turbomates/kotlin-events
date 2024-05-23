@@ -8,7 +8,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 abstract class Event {
     @Serializable(with = LocalDateTimeSerializer::class)
-    val timestamp: LocalDateTime = LocalDateTime.now(ZoneOffset.UTC);
+    val timestamp: LocalDateTime = LocalDateTime.now(ZoneOffset.UTC)
     abstract val key: Key<out Event>
 
     interface Key<T : Event>

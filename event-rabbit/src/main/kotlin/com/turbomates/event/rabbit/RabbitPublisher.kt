@@ -8,7 +8,7 @@ import com.turbomates.event.seriazlier.EventSerializer
 import kotlinx.serialization.json.Json
 
 class RabbitPublisher(
-    private val config: RabbitConfig,
+    private val config: Config,
     private val json: Json
 ) : Publisher {
     private val channel: Channel = config.connectionFactory.newConnection().createChannel()
@@ -26,9 +26,7 @@ class RabbitPublisher(
         )
     }
 
-    companion object {
-        private fun Channel.declareLocalExchange(exchange: String) {
-            exchangeDeclare(exchange, BuiltinExchangeType.TOPIC, true)
-        }
+    private fun Channel.declareLocalExchange(exchange: String) {
+        exchangeDeclare(exchange, BuiltinExchangeType.TOPIC, true)
     }
 }
