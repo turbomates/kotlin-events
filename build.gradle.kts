@@ -17,7 +17,7 @@ plugins {
 //    output.set(rootProject.buildDir.resolve("reports/detekt/events.xml"))
 //}
 group = "com.turbomates"
-version = System.getenv("RELEASE_VERSION") ?: "0.0.1"
+version = System.getenv("RELEASE_VERSION") ?: "0.1.0"
 subprojects {
     apply(plugin = "maven-publish")
     apply(plugin = "java")
@@ -42,6 +42,7 @@ subprojects {
             create<MavenPublication>("mavenJava") {
                 groupId = "com.turbomates"
                 artifactId = project.name
+                version = System.getenv("RELEASE_VERSION") ?: "0.1.0"
                 from(components["java"])
             }
             withType<MavenPublication> {
