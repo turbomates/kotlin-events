@@ -49,6 +49,8 @@ subprojects {
                 pom {
                     packaging = "jar"
                     name.set(project.name)
+                    description = "Kotlin events library"
+                    url = "https://github.com/turbomates/kotlin-events"
                     licenses {
                         license {
                             name.set("MIT license")
