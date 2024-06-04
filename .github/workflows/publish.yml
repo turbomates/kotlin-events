@@ -33,7 +33,7 @@ jobs:
         id: vars
         run: |
           echo ${GITHUB_REF_NAME:1} 
-          echo ::set-output name=version::${GITHUB_REF_NAME:1}
+          echo ::set-output name=version::${GITHUB_REF_NAME:0}
       - name: Build
         uses: gradle/gradle-build-action@v2
         with:
