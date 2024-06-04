@@ -29,7 +29,7 @@ subprojects {
     publishing {
         repositories {
             maven {
-                val releasesUrl = uri("https://s01.oss.sonatype.org/content/repositories/releases/")
+                val releasesUrl = uri("https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/")
                 val snapshotsUrl = uri("https://s01.oss.sonatype.org/content/repositories/snapshots/")
                 url = if (version.toString().endsWith("SNAPSHOT")) snapshotsUrl else releasesUrl
                 credentials {
