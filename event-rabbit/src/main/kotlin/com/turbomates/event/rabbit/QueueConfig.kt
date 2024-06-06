@@ -9,7 +9,7 @@ import kotlin.time.Duration.Companion.minutes
 data class QueueConfig(
     val queueName: String,
     var maxRetries: Int = 0,
-    var connectionsCount: Int = 1,
+    var prefetchCount: Int = 100,
     var retryDelay: Duration = 1.minutes,
 ) {
     fun isRetryEnabled(): Boolean = maxRetries > 0

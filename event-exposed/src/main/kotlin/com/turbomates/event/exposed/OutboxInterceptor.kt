@@ -2,6 +2,7 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.EventStore
+import java.util.UUID
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.batchInsert
 import org.jetbrains.exposed.sql.statements.GlobalStatementInterceptor
@@ -23,9 +24,10 @@ internal fun List<Event>.save() {
         this[EventsTable.event] = event.original
         this[EventsTable.createdAt] = event.createdAt
     }
-    val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent<*>>()
+    val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent>()
     EventSourcingTable.batchInsert(eventSourcingEvents) { event ->
-        this[EventSourcingTable.id] = event.id.toString()
+        this[EventSourcingTable.id] = UUID.randomUUID()
+        this[EventSourcingTable.rootId] = event.rootId
         this[EventSourcingTable.event] = event
         this[EventSourcingTable.createdAt] = event.timestamp
     }

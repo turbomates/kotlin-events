@@ -2,6 +2,7 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.Channel
+import com.rabbitmq.client.Connection
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
@@ -13,19 +14,23 @@ class RabbitQueue(
     private val json: Json,
     private val subscribersRegistry: SubscribersRegistry,
 ) {
-    val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit = { config, subscribers ->
-        basicConsume(
-            config.queueName,
-            false,
-            ListenerDeliveryCallback(
-                ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
-                config,
-                subscribers,
-                json
-            ),
-            ListenerCancelCallback()
-        )
-    }
+    private val channels = mutableListOf<Channel>()
+    private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
+    val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit =
+        { config, subscribers ->
+            basicQos(config.prefetchCount)
+            basicConsume(
+                config.queueName,
+                false,
+                ListenerDeliveryCallback(
+                    ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
+                    config,
+                    subscribers,
+                    json
+                ),
+                ListenerCancelCallback()
+            )
+        }
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
@@ -39,12 +44,20 @@ class RabbitQueue(
     }
 
     private fun channel(queueConfig: QueueConfig): Channel {
-        val channel = config.connectionFactory.newConnection().createChannel()
+        val channel = connections.random().createChannel()
+        channels.add(channel)
         return channel.apply { queueConfig.dlxQueue() }
     }
 
     private fun EventSubscriber<out Event>.consumers(queuesConfig: List<QueueConfig>) {
-        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(queueName(config.queuePrefix))
+        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(
+            queueName(
+                config.queuePrefix
+            ),
+            prefetchCount = config.defaultPreFetch,
+            maxRetries = config.defaultMaxRetries,
+            retryDelay = config.defaultRetryDelay,
+        )
         val channel = channel(queueConfig)
         channel.run { queueConfig.dlxQueue() }
         channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
@@ -52,7 +65,14 @@ class RabbitQueue(
     }
 
     private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>) {
-        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(queueName(config.queuePrefix))
+        val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(
+            queueName(
+                config.queuePrefix
+            ),
+            prefetchCount = config.defaultPreFetch,
+            maxRetries = config.defaultMaxRetries,
+            retryDelay = config.defaultRetryDelay,
+        )
         val channel = channel(queueConfig)
         subscribers().forEach { subscriber ->
             channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
@@ -61,7 +81,7 @@ class RabbitQueue(
     }
 
     context(Channel)
-            private fun QueueConfig.dlxQueue() {
+    private fun QueueConfig.dlxQueue() {
         if (!isRetryEnabled()) {
             queueDeclare(queueName, true, false, false, mapOf())
             return
@@ -87,6 +107,11 @@ class RabbitQueue(
 
         queueDeclare(queueName.pl(), true, false, false, mapOf())
         queueBind(queueName.pl(), config.exchange, queueName.pl())
+    }
+
+    fun close() {
+        connections.forEach { it.close() }
+        channels.forEach { it.close() }
     }
 
     data class ChannelInfo(val queue: String, val exchange: String, val channel: Channel)

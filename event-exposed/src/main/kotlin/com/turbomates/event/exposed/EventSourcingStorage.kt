@@ -3,10 +3,13 @@ package com.turbomates.event.exposed
 import com.turbomates.event.Event
 import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.dao.id.EntityID
 import org.jetbrains.exposed.dao.id.IdTable
+import org.jetbrains.exposed.dao.id.UUIDTable
 import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Op
@@ -21,20 +24,21 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 
 class EventSourcingStorage(private val database: Database) {
-    suspend fun get(aggregateRoot: String): List<Event> {
+    suspend fun get(aggregateRoot: UUID): List<Event> {
         return newSuspendedTransaction(Dispatchers.IO, database) {
             EventSourcingTable
                 .selectAll()
-                .where { EventSourcingTable.id eq aggregateRoot }
+                .where { EventSourcingTable.rootId eq aggregateRoot }
                 .orderBy(EventSourcingTable.createdAt, SortOrder.ASC)
                 .map { it[EventSourcingTable.event] }
         }
     }
 
-    suspend fun add(events: List<EventSourcingEvent<*>>) {
+    suspend fun add(events: List<EventSourcingEvent>) {
         newSuspendedTransaction(Dispatchers.IO, database) {
             EventSourcingTable.batchInsert(events) { event ->
-                this[EventSourcingTable.id] = event.id.toString()
+                this[EventSourcingTable.id] = UUID.randomUUID()
+                this[EventSourcingTable.rootId] = event.rootId
                 this[EventSourcingTable.event] = event
                 this[EventSourcingTable.createdAt] = event.timestamp
             }
@@ -42,9 +46,8 @@ class EventSourcingStorage(private val database: Database) {
     }
 }
 
-object EventSourcingTable : IdTable<String>("event_sourcing") {
-    override val id: Column<EntityID<String>> = text("root_id").entityId()
-    override val primaryKey = PrimaryKey(id)
+internal object EventSourcingTable : UUIDTable("event_sourcing") {
+    val rootId = uuid("root_id")
     internal val event = jsonb("data", Json, EventSerializer)
-    val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
+    val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

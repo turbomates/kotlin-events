@@ -7,7 +7,6 @@ import com.rabbitmq.client.Delivery
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.seriazlier.EventSerializer
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -27,7 +26,6 @@ internal class ListenerDeliveryCallback(
             try {
                 logger.info("Event $eventJsonString accepted ")
                 val event = json.decodeFromString(EventSerializer, eventJsonString)
-
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
                 callback?.invoke(event)
                 channelInfo.channel.basicAck(message.envelope.deliveryTag, false)

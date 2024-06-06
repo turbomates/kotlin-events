@@ -17,7 +17,9 @@ import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.SchemaUtils.withDataBaseLock
 import org.jetbrains.exposed.sql.SqlExpressionBuilder
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.isNull
+import org.jetbrains.exposed.sql.deleteWhere
 import org.jetbrains.exposed.sql.javatime.datetime
 import org.jetbrains.exposed.sql.json.jsonb
 import org.jetbrains.exposed.sql.select
@@ -41,13 +43,12 @@ class OutboxPublisher(
                 val events = load(limit)
                 events.forEach { event ->
                     try {
-                        publish(event.id)
                         publishers.forEach { publisher ->
                             logger.debug("event " + event.id.toString() + " was published by ${publisher.javaClass.name} in worker")
                             publisher.publish(event.original)
                         }
+                        publish(event.id)
                     } catch (ignore: Throwable) {
-                        resetPublish(event.id)
                         logger.error("error while publishing event ${event.id}", ignore)
                     }
                 }
@@ -69,17 +70,7 @@ class OutboxPublisher(
 
     private fun publish(id: UUID) {
         transaction(database) {
-            EventsTable.update({ EventsTable.id eq id }) {
-                it[publishedAt] = LocalDateTime.now()
-            }
-        }
-    }
-
-    private fun resetPublish(id: UUID) {
-        transaction(database) {
-            EventsTable.update({ EventsTable.id eq id }) {
-                it[publishedAt] = null
-            }
+            EventsTable.deleteWhere { EventsTable.id eq id }
         }
     }
 }
