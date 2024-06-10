@@ -1,6 +1,6 @@
 plugins {
     java
-    kotlin("jvm") apply true
+    kotlin("jvm") version "2.0.0"
     id("maven-publish") apply true
     id("signing") apply true
     alias(deps.plugins.detekt)

@@ -6,18 +6,18 @@ include("event-rabbit")
 
 pluginManagement {
     plugins {
-        id("org.jetbrains.kotlin.jvm") version "1.9.24"
+        id("org.jetbrains.kotlin.jvm") version "2.0.0"
     }
 }
 dependencyResolutionManagement {
     versionCatalogs {
         create("deps") {
             version("detekt", "1.23.6")
-            version("kotlin", "1.9.24")
+            version("kotlin", "2.0.0")
             version("test_logger", "3.2.0")
-            version("kotlin_serialization_json", "1.6.3")
+            version("kotlin_serialization_json", "1.7.0")
             version("slf4j", "2.0.13")
-            version("exposed", "0.49.0")
+            version("exposed", "0.51.1")
             version("postgresql_jdbc", "42.7.3")
             version("rabbitmq_amqp_client", "5.20.0")
             version("coroutines", "1.8.1")
