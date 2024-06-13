@@ -42,7 +42,7 @@ class RabbitQueueTest {
         val registry = SubscribersRegistry()
         val subscriber = object : EventsSubscriber {
             override fun name(): String {
-                return "test"
+                return "sportsbook.FeedSubscriber"
             }
             override fun subscribers(): List<EventSubscriber<out Event>> {
                 return listOf(TestEvent.subscriber {
