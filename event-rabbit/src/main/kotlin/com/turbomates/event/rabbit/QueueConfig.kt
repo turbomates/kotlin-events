@@ -22,13 +22,13 @@ data class QueueConfig(
     }
 }
 
-internal fun KClass<out EventsSubscriber>.config(prefix: String, block: QueueConfig.() -> Unit): QueueConfig {
+internal fun EventsSubscriber.config(prefix: String, block: QueueConfig.() -> Unit): QueueConfig {
     val config = QueueConfig(this.queueName(prefix))
     return config.also { it.block() }
 }
 
 @JvmName("eventSubscriberConfig")
-internal fun KClass<out EventSubscriber<*>>.config(prefix: String, block: QueueConfig.() -> Unit): QueueConfig {
+internal fun EventSubscriber<*>.config(prefix: String, block: QueueConfig.() -> Unit): QueueConfig {
     val config = QueueConfig(this.queueName(prefix))
     return config.also { it.block() }
 }

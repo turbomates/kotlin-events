@@ -20,7 +20,7 @@ internal fun EventsSubscriber.queueName(prefix: String): String {
 
 private fun queueName(packagePath: String, prefix: String): String {
     val splitPath = packagePath.split('.')
-    return prefix + "." + splitPath.getOrNull(2)?.lowercase() + "." + splitPath.takeLast(1)
+    return prefix + "." + splitPath.getOrNull(2)?.let { "${it.lowercase()}." }.orEmpty() + splitPath.takeLast(1)
         .joinToString(separator = ".") { it.camelToSnakeCase() }
 }
 
