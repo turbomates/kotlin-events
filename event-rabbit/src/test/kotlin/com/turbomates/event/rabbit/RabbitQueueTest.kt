@@ -53,7 +53,7 @@ class RabbitQueueTest {
         registry.registry(subscriber)
         val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
         val rabbitQueue = RabbitQueue(Config(factory, "test", "test"), Json, registry)
-        rabbitQueue.run(listOf(QueueConfig(subscriber::class.queueName("test"), 3, retryDelay = 1.seconds)))
+        rabbitQueue.run(listOf(QueueConfig(subscriber.name(), 3, retryDelay = 1.seconds)))
         publisher.publish(event)
         withTimeout(60.seconds) {
             launch {

@@ -40,14 +40,4 @@ class SubscribersRegistry {
 
 data class Subscribers(val eventsSubscribers: List<EventsSubscriber>, val eventSubscribers: List<EventSubscriber<out Event>>)
 
-abstract class EventSubscriber<T : Event>(val key: Event.Key<T>) {
-    abstract suspend operator fun invoke(event: T)
-}
-
-
-inline fun <reified TEvent : Event, reified TKey : Event.Key<TEvent>> TKey.subscriber(crossinline action: suspend (TEvent) -> Unit): EventSubscriber<TEvent> =
-    object : EventSubscriber<TEvent>(this) {
-        override suspend fun invoke(event: TEvent) = action(event)
-    }
-
 internal fun KClass<*>.moduleName() = qualifiedName!!.split(".")[2]
