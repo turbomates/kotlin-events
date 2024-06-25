@@ -41,7 +41,7 @@ internal class ListenerDeliveryCallback(
                             channel.basicPublish(
                                 exchange,
                                 config.queueName.pl(),
-                                message.properties,
+                                message.properties.withExceptionInfo(expected),
                                 message.body
                             )
                             channel.basicAck(message.envelope.deliveryTag, false)
@@ -57,6 +57,31 @@ internal class ListenerDeliveryCallback(
         }
     }
 
+    private fun AMQP.BasicProperties.withExceptionInfo(exception: Throwable): AMQP.BasicProperties {
+        val exceptionMessage = (exception.cause?.message ?: exception.message)?.truncateTo(maxHeaderSize)
+        val stackTrace = exception.stackTraceToString()
+
+        headers[EXCEPTION_HEADER] = exceptionMessage
+        headers[EXCEPTION_STACKTRACE_HEADER] = stackTrace.truncateTo(maxHeaderSize - (exceptionMessage?.length ?: 0))
+        return this
+    }
+
+    private fun String.truncateTo(maxLength: Int): String =
+        if (length <= maxLength) {
+            this
+        } else {
+            this.substring(0, maxLength)
+        }
+
+    private val maxHeaderSize by lazy {
+        val maxFrameSize = channelInfo.channel.connection.frameMax
+        if (maxFrameSize == 0) {
+            MAX_EXCEPTION_HEADER_SIZE
+        } else {
+            maxFrameSize - MIN_HEADER_FRAME_SIZE
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun AMQP.BasicProperties.retryCount(): Long {
         if (headers == null) {
@@ -64,6 +89,13 @@ internal class ListenerDeliveryCallback(
         }
         val retries = headers["x-death"] as? List<*>
         return retries?.let { (it.firstOrNull() as Map<String, Any?>)["count"] as? Long } ?: 0L
+    }
+
+    private companion object {
+        const val EXCEPTION_HEADER = "x-exception-message"
+        const val EXCEPTION_STACKTRACE_HEADER = "x-exception-stacktrace"
+        const val MAX_EXCEPTION_HEADER_SIZE = 4096
+        const val MIN_HEADER_FRAME_SIZE = 20_000
     }
 }
 
