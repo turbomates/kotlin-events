@@ -8,7 +8,7 @@ abstract class EventSubscriber<T : Event>(val key: Event.Key<T>) {
 }
 
 fun KClass<out EventSubscriber<out Event>>.scopedName(): String {
-    return "${moduleName()}.$simpleName"
+    return "${moduleName()}.${requireNotNull(simpleName)}"
 }
 
 inline fun <reified TEvent : Event, reified TKey : Event.Key<TEvent>> TKey.subscriber(crossinline action: suspend (TEvent) -> Unit): EventSubscriber<TEvent> =
