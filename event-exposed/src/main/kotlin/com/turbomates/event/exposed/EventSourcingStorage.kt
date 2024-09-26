@@ -7,24 +7,17 @@ import java.time.ZoneOffset
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.dao.id.EntityID
-import org.jetbrains.exposed.dao.id.IdTable
 import org.jetbrains.exposed.dao.id.UUIDTable
-import org.jetbrains.exposed.sql.Column
 import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.SqlExpressionBuilder
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.batchInsert
 import org.jetbrains.exposed.sql.javatime.datetime
 import org.jetbrains.exposed.sql.json.jsonb
-import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
 
 class EventSourcingStorage(private val database: Database) {
-    suspend fun get(aggregateRoot: UUID): List<Event> {
+    suspend fun get(aggregateRoot: String): List<Event> {
         return newSuspendedTransaction(Dispatchers.IO, database) {
             EventSourcingTable
                 .selectAll()
@@ -47,7 +40,7 @@ class EventSourcingStorage(private val database: Database) {
 }
 
 internal object EventSourcingTable : UUIDTable("event_sourcing") {
-    val rootId = uuid("root_id")
+    val rootId = text("root_id")
     internal val event = jsonb("data", Json, EventSerializer)
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }
