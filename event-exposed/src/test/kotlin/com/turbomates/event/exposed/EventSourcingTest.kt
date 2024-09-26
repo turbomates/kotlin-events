@@ -28,14 +28,16 @@ class EventSourcingTest {
     }
 
     @Test
-    fun `write and read from storage`() = runBlocking {
+    fun `write and read from storage`() {
         val eventSourcingStorage = EventSourcingStorage(database)
         val testEvent = TestEventSourcingEvent(UUID.randomUUID().toString())
         transaction(database) {
             EventSourcingEvent::class.java.classLoader.getResourceAsStream("event_sourcing_postgres_table.sql")?.apply {
                 exec(String(readAllBytes()))
             }
+        }
 
+        transaction(database) {
             runBlocking {
                 eventSourcingStorage.add(listOf(testEvent))
             }
@@ -47,13 +49,13 @@ class EventSourcingTest {
             }
         }
     }
+}
 
-    @Serializable
-    private data class TestEventSourcingEvent(val testRootId: String) : EventSourcingEvent(testRootId) {
-        override val key: Key<out Event>
-            get() = Companion
+@Serializable
+private data class TestEventSourcingEvent(val testRootId: String) : EventSourcingEvent(testRootId) {
+    override val key: Key<out Event>
+        get() = Companion
 
-        companion object : Key<TestEventSourcingEvent>
-    }
+    companion object : Key<TestEventSourcingEvent>
 }
 

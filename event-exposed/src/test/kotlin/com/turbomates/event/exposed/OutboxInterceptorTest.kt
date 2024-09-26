@@ -17,7 +17,6 @@ class OutboxInterceptorTest {
     fun setUp() {
         val underTest = PostgreSQLContainer("postgres:14").withEnv(mapOf("POSTGRES_USER" to "test", "POSTGRES_PASSWORD" to "test"))
         underTest.start()
-        println(underTest.jdbcUrl)
         database = Database.connect(
             underTest.jdbcUrl,
             driver = "org.postgresql.Driver",
