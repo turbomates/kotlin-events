@@ -12,5 +12,5 @@ interface EventsSubscriber {
 }
 
 fun KClass<out EventsSubscriber>.scopedName(): String {
-    return "${moduleName()}.$simpleName"
+    return "${moduleName()}.${requireNotNull(simpleName)}"
 }
