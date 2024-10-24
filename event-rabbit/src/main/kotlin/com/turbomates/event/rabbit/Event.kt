@@ -9,11 +9,11 @@ internal fun Event.Key<*>.routeName(): String {
     return eventClassPath.takeLast(3).joinToString(".").camelToSnakeCase()
 }
 
-internal fun EventSubscriber<*>.queueName(prefix: String): String {
+fun EventSubscriber<*>.queueName(prefix: String): String {
     return queueName(this.name(), prefix)
 }
 
-internal fun EventsSubscriber.queueName(prefix: String): String {
+fun EventsSubscriber.queueName(prefix: String): String {
     return queueName(this.name(), prefix)
 }
 
