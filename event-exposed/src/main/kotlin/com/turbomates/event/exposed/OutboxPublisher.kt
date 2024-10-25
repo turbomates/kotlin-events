@@ -62,9 +62,14 @@ class OutboxPublisher(
 
     private fun load(limit: Int): List<PublicEvent> {
         return transaction(database) {
-            EventsTable.selectAll().where { EventsTable.publishedAt.isNull() }.limit(limit).map {
-                PublicEvent(it[EventsTable.event], it[EventsTable.id].value)
-            }
+            EventsTable
+                .selectAll()
+                .where { EventsTable.publishedAt.isNull() }
+                .limit(limit)
+                .orderBy(EventsTable.createdAt, org.jetbrains.exposed.sql.SortOrder.ASC)
+                .map {
+                    PublicEvent(it[EventsTable.event], it[EventsTable.id].value)
+                }
         }
     }
 
