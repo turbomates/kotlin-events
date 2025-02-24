@@ -41,6 +41,7 @@ class EventSourcingStorage(private val database: Database) {
 
 internal object EventSourcingTable : UUIDTable("event_sourcing") {
     val rootId = text("root_id")
-    internal val event = jsonb("data", Json, EventSerializer)
+    internal val event =
+        jsonb("data", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }
