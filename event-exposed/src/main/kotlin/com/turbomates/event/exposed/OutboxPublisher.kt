@@ -82,7 +82,8 @@ class OutboxPublisher(
 
 
 internal object EventsTable : UUIDTable("outbox_events") {
-    val event = jsonb("event", Json { ignoreUnknownKeys = true; encodeDefaults = true }, EventSerializer)
+    val event =
+        jsonb("event", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
 }
