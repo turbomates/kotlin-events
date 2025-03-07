@@ -13,12 +13,12 @@ dependencyResolutionManagement {
     versionCatalogs {
         create("deps") {
             version("detekt", "1.23.6")
-            version("kotlin", "2.0.0")
+            version("kotlin", "2.1.10")
             version("test_logger", "3.2.0")
-            version("kotlin_serialization_json", "1.7.0")
+            version("kotlin_serialization_json", "1.8.0")
             version("slf4j", "2.0.13")
-            version("exposed", "0.53.0")
-            version("postgresql_jdbc", "42.7.3")
+            version("exposed", "0.60.0")
+            version("postgresql_jdbc", "42.7.5")
             version("rabbitmq_amqp_client", "5.20.0")
             version("coroutines", "1.8.1")
             version("testcontainers", "1.19.8")

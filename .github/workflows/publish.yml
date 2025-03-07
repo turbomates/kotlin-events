@@ -12,7 +12,7 @@ jobs:
       - uses: actions/setup-java@v2
         with:
           distribution: 'adopt'
-          java-version: '17'
+          java-version: '21'
           cache: 'gradle'
       - name: Run tests
         run: ./gradlew test
@@ -27,7 +27,7 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: 'adopt'
-          java-version: '17'
+          java-version: '21'
           cache: 'gradle'
       - name: Set output
         id: vars
