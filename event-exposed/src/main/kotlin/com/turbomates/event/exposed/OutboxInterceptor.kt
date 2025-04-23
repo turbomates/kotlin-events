@@ -17,7 +17,7 @@ class OutboxInterceptor : GlobalStatementInterceptor {
 }
 
 val Transaction.events: EventStore by transactionScope { EventStore() }
-internal fun List<Event>.save() {
+fun List<Event>.save() {
     val events = this.map { PublicEvent(it) }
     EventsTable.batchInsert(events) { event ->
         this[EventsTable.id] = event.id
