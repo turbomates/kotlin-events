@@ -1,6 +1,7 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Publisher
+import com.turbomates.event.TraceInformation
 import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.util.UUID
@@ -40,7 +41,7 @@ class OutboxPublisher(
                     try {
                         publishers.forEach { publisher ->
                             logger.debug("event " + event.id.toString() + " was published by ${publisher.javaClass.name} in worker")
-                            publisher.publish(event.original)
+                            publisher.publish(event.original, event.traceInformation)
                         }
                         publish(event.id)
                     } catch (ignore: Throwable) {
@@ -86,6 +87,4 @@ internal object EventsTable : UUIDTable("outbox_events") {
         ).nullable()
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
-    val traceparent = text("traceparent").nullable()
-    val spanId = text("span_id").nullable()
 }

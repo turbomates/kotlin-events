@@ -6,17 +6,14 @@ import com.turbomates.event.NoOpTelemetryService
 import com.turbomates.event.TelemetryService
 import java.util.ServiceLoader
 import java.util.UUID
+import org.jetbrains.exposed.v1.core.Key
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.statements.GlobalStatementInterceptor
 import org.jetbrains.exposed.v1.core.transactions.transactionScope
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 
 class OutboxInterceptor : GlobalStatementInterceptor {
-    private val telemetryService: TelemetryService
-
-    init {
-        telemetryService = ServiceLoader.load(TelemetryService::class.java).findFirst().orElse(NoOpTelemetryService())
-    }
+    private val telemetryService: TelemetryService = ServiceLoader.load(TelemetryService::class.java).findFirst().orElse(NoOpTelemetryService())
 
     override fun beforeCommit(transaction: Transaction) {
         val events = transaction.events.raiseEvents().toList()
@@ -30,8 +27,7 @@ fun List<Event>.save(telemetryService: TelemetryService) {
     val events = this.map {
         PublicEvent(
             it,
-            traceparent = telemetryService.traceparent,
-            spanId = telemetryService.spanId
+            traceInformation = telemetryService.traceInformation()
         )
     }
     EventsTable.batchInsert(events) { event ->

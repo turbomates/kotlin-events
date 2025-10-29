@@ -1,16 +1,35 @@
 package com.turbomates.event
 
-interface TelemetryService {
-    val traceparent: String?
-    val spanId: String?
+import kotlinx.serialization.Serializable
 
-    companion object {
-        const val TRACEPARENT_KEY = "traceparent"
-        const val SPAN_ID_KEY = "spanId"
-    }
+interface TelemetryService {
+    fun traceInformation(): TraceInformation
+    suspend fun link(
+        traceInformation: TraceInformation,
+        spanName: String,
+        attributes: Map<String, String> = emptyMap(),
+        block: suspend TraceInformation.() -> Unit
+    )
 }
 
 class NoOpTelemetryService : TelemetryService {
-    override val traceparent: String? = null
-    override val spanId: String? = null
+    override fun traceInformation(): TraceInformation {
+        return TraceInformation(null, null, null)
+    }
+
+    override suspend fun link(
+        traceInformation: TraceInformation,
+        spanName: String,
+        attributes: Map<String, String>,
+        block: suspend TraceInformation.() -> Unit
+    ) {
+        block.invoke(traceInformation)
+    }
 }
+
+@Serializable
+data class TraceInformation(
+    val traceparent: String?,
+    val tracestate: String?,
+    val baggage: String?,
+)

@@ -1,6 +1,7 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.TraceInformation
 import com.turbomates.event.exposed.serializer.UUIDSerializer
 import com.turbomates.event.seriazlier.EventSerializer
 import com.turbomates.event.seriazlier.LocalDateTimeSerializer
@@ -19,9 +20,3 @@ data class PublicEvent(
     val createdAt = original.timestamp
 }
 
-@Serializable
-data class TraceInformation(
-    val traceparent: String,
-    val tracestate: String,
-    val baggage: String,
-)

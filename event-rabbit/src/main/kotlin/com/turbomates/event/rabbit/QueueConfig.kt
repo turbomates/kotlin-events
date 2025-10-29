@@ -15,6 +15,9 @@ data class QueueConfig(
     fun isRetryEnabled(): Boolean = maxRetries > 0
 
     companion object {
+        const val TRACEPARENT_HEADER = "traceparent"
+        const val TRACESTATE_HEADER = "tracestate"
+        const val BAGGAGE_HEADER = "baggage"
         operator fun invoke(name: String, block: QueueConfig.() -> Unit): QueueConfig {
             val config = QueueConfig(name)
             return config.also { it.block() }
