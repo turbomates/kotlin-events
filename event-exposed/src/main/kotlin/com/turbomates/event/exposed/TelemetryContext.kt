@@ -1,5 +1,8 @@
 package com.turbomates.event.exposed
 
+import org.jetbrains.exposed.sql.Transaction
+import org.jetbrains.exposed.sql.transactions.transactionScope
+
 /**
  * Represents telemetry context (trace and span information)
  * that should be propagated with events
@@ -34,10 +37,17 @@ object NoOpTelemetryContextProvider : TelemetryContextProvider {
 }
 
 /**
- * Global holder for telemetry context provider
- * Can be set during application initialization
+ * Extension property to access telemetry context provider for a transaction.
+ * Uses Exposed's transactionScope to store provider per transaction (thread-safe).
+ *
+ * Example usage:
+ * ```kotlin
+ * transaction {
+ *     telemetryContextProvider = OpenTelemetryContextProvider()
+ *     events.addEvent(MyEvent()) // Will use the provider set above
+ * }
+ * ```
  */
-object TelemetryContextHolder {
-    @Volatile
-    var provider: TelemetryContextProvider = NoOpTelemetryContextProvider
+var Transaction.telemetryContextProvider: TelemetryContextProvider by transactionScope {
+    NoOpTelemetryContextProvider
 }

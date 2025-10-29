@@ -25,13 +25,17 @@ interface TelemetryContextProvider {
 }
 ```
 
-### 3. TelemetryContextHolder
-Глобальный holder для провайдера телеметрии:
+### 3. Transaction Extension Property
+Extension property для Transaction, использующий `transactionScope` (thread-safe):
 ```kotlin
-object TelemetryContextHolder {
-    var provider: TelemetryContextProvider = NoOpTelemetryContextProvider
-}
+var Transaction.telemetryContextProvider: TelemetryContextProvider
 ```
+
+Этот подход:
+- ✅ Thread-safe (использует Exposed's transactionScope)
+- ✅ Без глобального изменяемого состояния
+- ✅ Каждая транзакция может иметь свой провайдер
+- ✅ Следует идиоматичному паттерну Kotlin/Exposed
 
 ### 4. База данных
 Таблица `outbox_events` теперь содержит два дополнительных поля:
@@ -41,7 +45,14 @@ object TelemetryContextHolder {
 ## Использование
 
 ### Без телеметрии (по умолчанию)
-По умолчанию используется `NoOpTelemetryContextProvider`, который возвращает пустой контекст. В этом случае `trace_id` и `span_id` будут null.
+По умолчанию используется `NoOpTelemetryContextProvider`, который возвращает пустой контекст. В этом случае `trace_id` и `span_id` будут null:
+
+```kotlin
+transaction {
+    // Провайдер не настроен - trace_id и span_id будут null
+    events.addEvent(MyEvent())
+}
+```
 
 ### С OpenTelemetry
 
@@ -71,15 +82,20 @@ class OpenTelemetryContextProvider : TelemetryContextProvider {
 }
 ```
 
-3. Инициализируйте при старте приложения:
+3. Используйте в транзакции:
 ```kotlin
-fun main() {
-    // Настройка OpenTelemetry...
+// Вариант 1: Установить для конкретной транзакции
+transaction {
+    telemetryContextProvider = OpenTelemetryContextProvider()
+    events.addEvent(MyEvent()) // trace_id и span_id сохранятся автоматически
+}
 
-    // Установка провайдера телеметрии
-    TelemetryContextHolder.provider = OpenTelemetryContextProvider()
-
-    // Остальная инициализация приложения...
+// Вариант 2: Использовать с существующим Span context (рекомендуется)
+transaction {
+    telemetryContextProvider = OpenTelemetryContextProvider()
+    // Весь код в этой транзакции будет использовать текущий OpenTelemetry context
+    service.doSomething()
+    events.addEvent(MyEvent())
 }
 ```
 
@@ -109,13 +125,70 @@ class MicrometerContextProvider(private val tracer: Tracer) : TelemetryContextPr
 }
 ```
 
-3. Инициализируйте с бином Tracer:
+3. Используйте в транзакции:
 ```kotlin
-@Bean
-fun telemetryContextProvider(tracer: Tracer): TelemetryContextProvider {
-    val provider = MicrometerContextProvider(tracer)
-    TelemetryContextHolder.provider = provider
-    return provider
+@Service
+class MyService(private val tracer: Tracer) {
+    fun doWork() {
+        transaction {
+            telemetryContextProvider = MicrometerContextProvider(tracer)
+            events.addEvent(WorkDoneEvent())
+        }
+    }
+}
+```
+
+### Интеграция с фреймворками
+
+#### Spring Boot с OpenTelemetry
+```kotlin
+@Component
+class DatabaseTelemetryConfigurer {
+
+    @Bean
+    fun openTelemetryContextProvider(): TelemetryContextProvider {
+        return OpenTelemetryContextProvider()
+    }
+}
+
+@Service
+class MyService(private val telemetryProvider: TelemetryContextProvider) {
+
+    fun processOrder(order: Order) {
+        transaction {
+            // Устанавливаем провайдер из Spring context
+            telemetryContextProvider = telemetryProvider
+
+            // Сохраняем заказ
+            OrderTable.insert { ... }
+
+            // События автоматически получат текущий trace/span
+            events.addEvent(OrderCreatedEvent(order.id))
+        }
+    }
+}
+```
+
+#### Ktor с OpenTelemetry
+```kotlin
+fun Application.configureDatabases() {
+    val telemetryProvider = OpenTelemetryContextProvider()
+
+    routing {
+        post("/orders") {
+            val order = call.receive<Order>()
+
+            transaction {
+                telemetryContextProvider = telemetryProvider
+
+                // Обработка заказа
+                val orderId = OrderTable.insertAndGetId { ... }
+                events.addEvent(OrderCreatedEvent(orderId))
+            }
+
+            call.respond(HttpStatusCode.Created)
+        }
+    }
 }
 ```
 
@@ -164,25 +237,39 @@ class OutboxPublisher(/* ... */) {
 ```kotlin
 @Test
 fun `should save telemetry context`() {
-    TelemetryContextHolder.provider = object : TelemetryContextProvider {
-        override fun getCurrentContext() = TelemetryContext(
-            traceId = "test-trace-123",
-            spanId = "test-span-456"
-        )
+    transaction {
+        // Устанавливаем провайдер для этой конкретной транзакции
+        telemetryContextProvider = object : TelemetryContextProvider {
+            override fun getCurrentContext() = TelemetryContext(
+                traceId = "test-trace-123",
+                spanId = "test-span-456"
+            )
+        }
+
+        events.addEvent(TestEvent())
     }
 
-    try {
-        transaction {
-            events.addEvent(TestEvent())
-        }
+    transaction {
+        val savedEvent = EventsTable.selectAll().first()
+        assertEquals("test-trace-123", savedEvent[EventsTable.traceId])
+        assertEquals("test-span-456", savedEvent[EventsTable.spanId])
+    }
+}
 
-        transaction {
-            val savedEvent = EventsTable.selectAll().first()
-            assertEquals("test-trace-123", savedEvent[EventsTable.traceId])
-            assertEquals("test-span-456", savedEvent[EventsTable.spanId])
+@Test
+fun `should isolate telemetry between transactions`() {
+    // Транзакция 1 с телеметрией
+    transaction {
+        telemetryContextProvider = object : TelemetryContextProvider {
+            override fun getCurrentContext() = TelemetryContext("trace-1", "span-1")
         }
-    } finally {
-        TelemetryContextHolder.provider = NoOpTelemetryContextProvider
+        events.addEvent(Event1())
+    }
+
+    // Транзакция 2 без телеметрии (изолирована от первой)
+    transaction {
+        // Провайдер по умолчанию (NoOp) - не влияет на другие транзакции
+        events.addEvent(Event2())
     }
 }
 ```
@@ -192,6 +279,7 @@ fun `should save telemetry context`() {
 - Извлечение контекста телеметрии происходит **один раз** для всего батча событий (в функции `save()`)
 - Нет накладных расходов, если телеметрия не настроена (используется NoOpTelemetryContextProvider)
 - Поля `trace_id` и `span_id` nullable, поэтому не требуют заполнения
+- Thread-safe благодаря использованию `transactionScope` (каждая транзакция изолирована)
 
 ## Совместимость
 
@@ -199,3 +287,4 @@ fun `should save telemetry context`() {
 - Существующий код работает без изменений
 - Телеметрия опциональна и активируется только при настройке провайдера
 - Поддерживает любую библиотеку телеметрии через интерфейс `TelemetryContextProvider`
+- **Thread-safe**: нет глобального изменяемого состояния, каждая транзакция имеет свой контекст

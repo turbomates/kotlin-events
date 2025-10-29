@@ -46,37 +46,6 @@ class OutboxInterceptorTest {
         val testTraceId = "test-trace-id-12345"
         val testSpanId = "test-span-id-67890"
 
-        TelemetryContextHolder.provider = object : TelemetryContextProvider {
-            override fun getCurrentContext() = TelemetryContext(testTraceId, testSpanId)
-        }
-
-        try {
-            transaction(database) {
-                Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
-                    exec(String(readAllBytes()))
-                }
-            }
-
-            transaction(database) {
-                events.addEvent(TestEvent())
-            }
-
-            transaction(database) {
-                val savedEvent = EventsTable.selectAll().first()
-                assertEquals(testTraceId, savedEvent[EventsTable.traceId])
-                assertEquals(testSpanId, savedEvent[EventsTable.spanId])
-            }
-        } finally {
-            // Reset to default
-            TelemetryContextHolder.provider = NoOpTelemetryContextProvider
-        }
-    }
-
-    @Test
-    fun `should save null telemetry when no provider configured`() {
-        // Ensure default NoOp provider is used
-        TelemetryContextHolder.provider = NoOpTelemetryContextProvider
-
         transaction(database) {
             Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
                 exec(String(readAllBytes()))
@@ -84,6 +53,30 @@ class OutboxInterceptorTest {
         }
 
         transaction(database) {
+            // Set provider for this transaction only
+            telemetryContextProvider = object : TelemetryContextProvider {
+                override fun getCurrentContext() = TelemetryContext(testTraceId, testSpanId)
+            }
+            events.addEvent(TestEvent())
+        }
+
+        transaction(database) {
+            val savedEvent = EventsTable.selectAll().first()
+            assertEquals(testTraceId, savedEvent[EventsTable.traceId])
+            assertEquals(testSpanId, savedEvent[EventsTable.spanId])
+        }
+    }
+
+    @Test
+    fun `should save null telemetry when no provider configured`() {
+        transaction(database) {
+            Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
+                exec(String(readAllBytes()))
+            }
+        }
+
+        transaction(database) {
+            // Use default NoOp provider (no need to set explicitly)
             events.addEvent(TestEvent())
         }
 
