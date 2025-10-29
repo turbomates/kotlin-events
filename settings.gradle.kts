@@ -3,6 +3,7 @@ rootProject.name = "event"
 include("event")
 include("event-exposed")
 include("event-rabbit")
+include(":event-telemetry-opentelemetry")
 
 pluginManagement {
     plugins {
