@@ -18,11 +18,16 @@ class OutboxInterceptor : GlobalStatementInterceptor {
 
 val Transaction.events: EventStore by transactionScope { EventStore() }
 fun List<Event>.save() {
+    // Capture telemetry context once for all events in the batch
+    val telemetryContext = TelemetryContextHolder.provider.getCurrentContext()
+
     val events = this.map { PublicEvent(it) }
     EventsTable.batchInsert(events) { event ->
         this[EventsTable.id] = event.id
         this[EventsTable.event] = event.original
         this[EventsTable.createdAt] = event.createdAt
+        this[EventsTable.traceId] = telemetryContext.traceId
+        this[EventsTable.spanId] = telemetryContext.spanId
     }
     val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent>()
     EventSourcingTable.batchInsert(eventSourcingEvents) { event ->
