@@ -37,17 +37,68 @@ object NoOpTelemetryContextProvider : TelemetryContextProvider {
 }
 
 /**
+ * Global configuration for telemetry.
+ * Set the default provider once during application startup.
+ *
+ * Example:
+ * ```kotlin
+ * fun main() {
+ *     // Initialize telemetry
+ *     TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ *
+ *     // Now all transactions will automatically use this provider
+ *     transaction {
+ *         events.addEvent(MyEvent()) // trace/span captured automatically
+ *     }
+ * }
+ * ```
+ */
+object TelemetryConfig {
+    @Volatile
+    private var _defaultProvider: TelemetryContextProvider = NoOpTelemetryContextProvider
+
+    /**
+     * Get the default telemetry provider.
+     * Returns NoOpTelemetryContextProvider if not set.
+     */
+    val defaultProvider: TelemetryContextProvider
+        get() = _defaultProvider
+
+    /**
+     * Set the default telemetry provider for the application.
+     * This should be called once during application startup.
+     *
+     * @param provider The telemetry context provider to use globally
+     */
+    fun setDefaultProvider(provider: TelemetryContextProvider) {
+        _defaultProvider = provider
+    }
+}
+
+/**
  * Extension property to access telemetry context provider for a transaction.
  * Uses Exposed's transactionScope to store provider per transaction (thread-safe).
  *
+ * By default, uses TelemetryConfig.defaultProvider which can be set once at startup.
+ * Can be overridden for specific transactions (useful for testing).
+ *
  * Example usage:
  * ```kotlin
+ * // Set once at startup
+ * TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ *
+ * // All transactions automatically use the default provider
  * transaction {
- *     telemetryContextProvider = OpenTelemetryContextProvider()
- *     events.addEvent(MyEvent()) // Will use the provider set above
+ *     events.addEvent(MyEvent()) // trace/span captured automatically
+ * }
+ *
+ * // Override for specific transaction (e.g., in tests)
+ * transaction {
+ *     telemetryContextProvider = mockProvider
+ *     events.addEvent(TestEvent())
  * }
  * ```
  */
 var Transaction.telemetryContextProvider: TelemetryContextProvider by transactionScope {
-    NoOpTelemetryContextProvider
+    TelemetryConfig.defaultProvider
 }

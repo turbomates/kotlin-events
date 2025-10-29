@@ -25,16 +25,25 @@ interface TelemetryContextProvider {
 }
 ```
 
-### 3. Transaction Extension Property
+### 3. TelemetryConfig
+Глобальная конфигурация для установки default провайдера:
+```kotlin
+object TelemetryConfig {
+    fun setDefaultProvider(provider: TelemetryContextProvider)
+}
+```
+
+### 4. Transaction Extension Property
 Extension property для Transaction, использующий `transactionScope` (thread-safe):
 ```kotlin
 var Transaction.telemetryContextProvider: TelemetryContextProvider
 ```
 
 Этот подход:
+- ✅ Устанавливается **один раз** при старте приложения
+- ✅ Все транзакции **автоматически** используют default провайдер
 - ✅ Thread-safe (использует Exposed's transactionScope)
-- ✅ Без глобального изменяемого состояния
-- ✅ Каждая транзакция может иметь свой провайдер
+- ✅ Можно override для конкретной транзакции (тесты, специальные случаи)
 - ✅ Следует идиоматичному паттерну Kotlin/Exposed
 
 ### 4. База данных
@@ -54,7 +63,7 @@ transaction {
 }
 ```
 
-### С OpenTelemetry
+### С OpenTelemetry (рекомендуемый подход)
 
 1. Добавьте зависимость OpenTelemetry:
 ```kotlin
@@ -82,20 +91,31 @@ class OpenTelemetryContextProvider : TelemetryContextProvider {
 }
 ```
 
-3. Используйте в транзакции:
+3. **Установите один раз при старте приложения:**
 ```kotlin
-// Вариант 1: Установить для конкретной транзакции
+fun main() {
+    // Настройка OpenTelemetry...
+
+    // Установка default провайдера один раз
+    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+
+    // Теперь все транзакции автоматически используют телеметрию!
+    startApplication()
+}
+```
+
+4. **Используйте в коде без дополнительной настройки:**
+```kotlin
+// ✅ Все работает автоматически - провайдер уже настроен!
 transaction {
-    telemetryContextProvider = OpenTelemetryContextProvider()
-    events.addEvent(MyEvent()) // trace_id и span_id сохранятся автоматически
+    // trace_id и span_id захватываются автоматически
+    events.addEvent(OrderCreatedEvent(orderId))
 }
 
-// Вариант 2: Использовать с существующим Span context (рекомендуется)
+// ✅ Можно override для конкретной транзакции (редко нужно)
 transaction {
-    telemetryContextProvider = OpenTelemetryContextProvider()
-    // Весь код в этой транзакции будет использовать текущий OpenTelemetry context
-    service.doSomething()
-    events.addEvent(MyEvent())
+    telemetryContextProvider = customProvider
+    events.addEvent(SpecialEvent())
 }
 ```
 
@@ -125,13 +145,27 @@ class MicrometerContextProvider(private val tracer: Tracer) : TelemetryContextPr
 }
 ```
 
-3. Используйте в транзакции:
+3. **Установите при старте (Spring Boot):**
+```kotlin
+@Configuration
+class TelemetryConfiguration {
+
+    @Bean
+    fun telemetrySetup(tracer: Tracer): TelemetryContextProvider {
+        val provider = MicrometerContextProvider(tracer)
+        TelemetryConfig.setDefaultProvider(provider)
+        return provider
+    }
+}
+```
+
+4. **Используйте автоматически:**
 ```kotlin
 @Service
-class MyService(private val tracer: Tracer) {
+class MyService {
     fun doWork() {
+        // ✅ Провайдер уже настроен - просто работаем!
         transaction {
-            telemetryContextProvider = MicrometerContextProvider(tracer)
             events.addEvent(WorkDoneEvent())
         }
     }
@@ -142,23 +176,22 @@ class MyService(private val tracer: Tracer) {
 
 #### Spring Boot с OpenTelemetry
 ```kotlin
-@Component
-class DatabaseTelemetryConfigurer {
+@Configuration
+class DatabaseTelemetryConfiguration {
 
-    @Bean
-    fun openTelemetryContextProvider(): TelemetryContextProvider {
-        return OpenTelemetryContextProvider()
+    @PostConstruct
+    fun setupTelemetry() {
+        // Устанавливаем провайдер один раз при старте
+        TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
     }
 }
 
 @Service
-class MyService(private val telemetryProvider: TelemetryContextProvider) {
+class OrderService {
 
     fun processOrder(order: Order) {
+        // ✅ Все работает автоматически!
         transaction {
-            // Устанавливаем провайдер из Spring context
-            telemetryContextProvider = telemetryProvider
-
             // Сохраняем заказ
             OrderTable.insert { ... }
 
@@ -172,22 +205,42 @@ class MyService(private val telemetryProvider: TelemetryContextProvider) {
 #### Ktor с OpenTelemetry
 ```kotlin
 fun Application.configureDatabases() {
-    val telemetryProvider = OpenTelemetryContextProvider()
+    // Настройка OpenTelemetry...
+
+    // Устанавливаем провайдер один раз
+    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
 
     routing {
         post("/orders") {
             val order = call.receive<Order>()
 
+            // ✅ Телеметрия работает автоматически
             transaction {
-                telemetryContextProvider = telemetryProvider
-
-                // Обработка заказа
                 val orderId = OrderTable.insertAndGetId { ... }
                 events.addEvent(OrderCreatedEvent(orderId))
             }
 
             call.respond(HttpStatusCode.Created)
         }
+    }
+}
+```
+
+#### Простое консольное приложение
+```kotlin
+fun main() {
+    // Инициализация OpenTelemetry
+    val openTelemetry = OpenTelemetry.noop() // или ваша настройка
+
+    // Установка провайдера
+    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+
+    // Настройка БД
+    val database = Database.connect(...)
+
+    // Все готово - телеметрия работает везде!
+    transaction(database) {
+        events.addEvent(ApplicationStartedEvent())
     }
 }
 ```

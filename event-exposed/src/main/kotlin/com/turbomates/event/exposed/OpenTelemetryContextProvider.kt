@@ -12,12 +12,16 @@ package com.turbomates.event.exposed
  *
  * 2. Uncomment the code below
  *
- * 3. Use in your transactions:
+ * 3. Set once at application startup:
  *    ```kotlin
- *    transaction {
- *        telemetryContextProvider = OpenTelemetryContextProvider()
- *        // Your code here - trace/span will be captured automatically
- *        events.addEvent(MyEvent())
+ *    fun main() {
+ *        // Set default provider once
+ *        TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ *
+ *        // Now all transactions automatically capture telemetry
+ *        transaction {
+ *            events.addEvent(MyEvent()) // trace/span captured automatically
+ *        }
  *    }
  *    ```
  *
@@ -64,13 +68,19 @@ package com.turbomates.event.exposed
  *
  * Example with Spring Boot:
  * ```kotlin
+ * @Configuration
+ * class TelemetryConfiguration {
+ *     @PostConstruct
+ *     fun setup() {
+ *         TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ *     }
+ * }
+ *
  * @Service
  * class OrderService {
- *     private val telemetryProvider = OpenTelemetryContextProvider()
- *
  *     fun createOrder(order: Order) {
+ *         // Telemetry works automatically - no setup needed!
  *         transaction {
- *             telemetryContextProvider = telemetryProvider
  *             OrderTable.insert { ... }
  *             events.addEvent(OrderCreatedEvent(order.id))
  *         }
