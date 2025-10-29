@@ -42,7 +42,7 @@ internal class ListenerDeliveryCallback(
                 "messaging.rabbitmq.queue" to config.queueName,
                 "messaging.broker" to "rabbitmq",
             )
-            telemetryService.link(traceInformation, attributes) {
+            telemetryService.link(traceInformation, "rabbit.worker", attributes) {
                 val eventJsonString = String(message.body)
                 try {
                     logger.info("Event $eventJsonString accepted ")
