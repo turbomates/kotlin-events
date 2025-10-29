@@ -1,15 +1,15 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
-import kotlinx.coroutines.runBlocking
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.transactions.transaction
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
-import kotlinx.serialization.Serializable
-import java.util.UUID
 
 class EventSourcingTest {
     private lateinit var database: Database

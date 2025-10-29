@@ -15,7 +15,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
             listOf(
                 "-Xopt-in=kotlin.time.ExperimentalTime",
                 "-Xlambdas=indy",
-                "-Xcontext-receivers"
+                "-Xcontext-parameters"
             )
         )
     }

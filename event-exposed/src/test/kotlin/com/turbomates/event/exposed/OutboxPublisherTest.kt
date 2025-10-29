@@ -2,6 +2,7 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.Publisher
+import com.turbomates.event.TraceInformation
 import com.turbomates.event.exposed.serializer.UUIDSerializer
 import java.util.UUID
 import kotlin.test.Test
@@ -9,9 +10,9 @@ import kotlin.test.assertEquals
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 
@@ -53,7 +54,7 @@ class OutboxPublisherTest {
 
     object LocalPublisher : Publisher {
         val publishedEvents = mutableListOf<OutboxEvent>()
-        override suspend fun publish(event: Event) {
+        override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
             publishedEvents.add(event as OutboxEvent)
         }
     }
