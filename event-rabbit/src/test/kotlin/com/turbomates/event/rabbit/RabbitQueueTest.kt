@@ -4,6 +4,7 @@ import com.rabbitmq.client.ConnectionFactory
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
+import com.turbomates.event.NoOpTelemetryService
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.subscriber
 import kotlin.test.Test
@@ -44,6 +45,7 @@ class RabbitQueueTest {
             override fun name(): String {
                 return "sportsbook.FeedSubscriber"
             }
+
             override fun subscribers(): List<EventSubscriber<out Event>> {
                 return listOf(TestEvent.subscriber {
                     count++
@@ -55,7 +57,13 @@ class RabbitQueueTest {
         }
         registry.registry(subscriber)
         val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
-        val rabbitQueue = RabbitQueue(Config(factory, "test", "test"), Json, registry)
+        val rabbitQueue = RabbitQueue(
+            Config(factory, "test", "test"),
+            Json,
+            registry,
+            scope = this,
+            telemetryService = NoOpTelemetryService()
+        )
         rabbitQueue.run(listOf(QueueConfig(subscriber.queueName("test"), 3, retryDelay = 1.seconds)))
         publisher.publish(event)
         withTimeout(60.seconds) {

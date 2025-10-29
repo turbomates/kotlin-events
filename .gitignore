@@ -23,7 +23,7 @@ logback-test.xml
 .gradle
 **/build/
 **/out/
-
+.kotlin
 # Ignore Gradle GUI account
 gradle-app.setting
 
