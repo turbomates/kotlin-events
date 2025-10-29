@@ -10,11 +10,13 @@ repositories {
     mavenCentral()
 }
 tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
-    kotlinOptions {
-        freeCompilerArgs = listOf(
-            "-Xopt-in=kotlin.time.ExperimentalTime",
-            "-Xlambdas=indy",
-            "-Xcontext-receivers"
+    compilerOptions {
+        freeCompilerArgs.set(
+            listOf(
+                "-Xopt-in=kotlin.time.ExperimentalTime",
+                "-Xlambdas=indy",
+                "-Xcontext-receivers"
+            )
         )
     }
 }

@@ -7,7 +7,8 @@ import com.rabbitmq.client.Delivery
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.seriazlier.EventSerializer
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
@@ -16,12 +17,13 @@ internal class ListenerDeliveryCallback(
     private val config: QueueConfig,
     private val subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
     private val json: Json,
+    private val scope: CoroutineScope,
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
 
     @Suppress("UNCHECKED_CAST")
     override fun handle(consumerTag: String, message: Delivery) {
-        runBlocking {
+        scope.launch {
             val eventJsonString = String(message.body)
             try {
                 logger.info("Event $eventJsonString accepted ")
@@ -104,5 +106,6 @@ internal class ListenerCancelCallback : CancelCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     override fun handle(consumerTag: String?) {
         logger.error("Listener was cancelled $consumerTag")
+        throw InterruptedException("Listener was cancelled $consumerTag")
     }
 }

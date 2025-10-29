@@ -18,11 +18,5 @@ jobs:
           distribution: 'adopt'
           java-version: '21'
           cache: 'gradle'
-      - name: Cache Gradle packages
-        uses: actions/cache@v2
-        with:
-          path: ~/.gradle/caches
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle') }}
-          restore-keys: ${{ runner.os }}-gradle
       - name: Run tests
         run: ./gradlew test

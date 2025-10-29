@@ -6,15 +6,16 @@ import com.turbomates.event.NoOpTelemetryService
 import com.turbomates.event.TelemetryService
 import java.util.ServiceLoader
 import java.util.UUID
-import org.jetbrains.exposed.sql.Transaction
-import org.jetbrains.exposed.sql.batchInsert
-import org.jetbrains.exposed.sql.statements.GlobalStatementInterceptor
-import org.jetbrains.exposed.sql.transactions.transactionScope
+import org.jetbrains.exposed.v1.core.Transaction
+import org.jetbrains.exposed.v1.core.statements.GlobalStatementInterceptor
+import org.jetbrains.exposed.v1.core.transactions.transactionScope
+import org.jetbrains.exposed.v1.jdbc.batchInsert
 
 class OutboxInterceptor : GlobalStatementInterceptor {
+    private val telemetryService: TelemetryService
 
-    private val telemetryService by lazy {
-        ServiceLoader.load(TelemetryService::class.java).findFirst().orElse(NoOpTelemetryService())
+    init {
+        telemetryService = ServiceLoader.load(TelemetryService::class.java).findFirst().orElse(NoOpTelemetryService())
     }
 
     override fun beforeCommit(transaction: Transaction) {
@@ -23,7 +24,8 @@ class OutboxInterceptor : GlobalStatementInterceptor {
     }
 }
 
-val Transaction.events: EventStore by transactionScope { EventStore() }
+val Transaction.events: EventStore by transactionScope { getOrCreate(Key()) { EventStore() } }
+
 fun List<Event>.save(telemetryService: TelemetryService) {
     val events = this.map {
         PublicEvent(
@@ -36,8 +38,7 @@ fun List<Event>.save(telemetryService: TelemetryService) {
         this[EventsTable.id] = event.id
         this[EventsTable.event] = event.original
         this[EventsTable.createdAt] = event.createdAt
-        this[EventsTable.traceparent] = event.traceparent
-        this[EventsTable.spanId] = event.spanId
+        this[EventsTable.traceInformation] = event.traceInformation
     }
     val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent>()
     EventSourcingTable.batchInsert(eventSourcingEvents) { event ->

@@ -12,14 +12,16 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.dao.id.UUIDTable
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.deleteWhere
-import org.jetbrains.exposed.sql.javatime.datetime
-import org.jetbrains.exposed.sql.json.jsonb
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.dao.id.UUIDTable
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.javatime.datetime
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.json.jsonb
 import org.slf4j.LoggerFactory
 
 class OutboxPublisher(
@@ -59,7 +61,7 @@ class OutboxPublisher(
                 .selectAll()
                 .where { EventsTable.publishedAt.isNull() }
                 .limit(limit)
-                .orderBy(EventsTable.createdAt, org.jetbrains.exposed.sql.SortOrder.ASC)
+                .orderBy(EventsTable.createdAt, SortOrder.ASC)
                 .map {
                     PublicEvent(it[EventsTable.event], it[EventsTable.id].value)
                 }
@@ -77,6 +79,11 @@ class OutboxPublisher(
 internal object EventsTable : UUIDTable("outbox_events") {
     val event =
         jsonb("event", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
+    val traceInformation =
+        jsonb(
+            "trace_information", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false },
+            TraceInformation.serializer()
+        ).nullable()
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
     val traceparent = text("traceparent").nullable()

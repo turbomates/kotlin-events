@@ -7,22 +7,23 @@ include(":event-telemetry-opentelemetry")
 
 pluginManagement {
     plugins {
-        id("org.jetbrains.kotlin.jvm") version "2.0.0"
+        id("org.jetbrains.kotlin.jvm") version "2.2.20"
     }
 }
 dependencyResolutionManagement {
     versionCatalogs {
         create("deps") {
             version("detekt", "1.23.6")
-            version("kotlin", "2.1.10")
-            version("test_logger", "3.2.0")
-            version("kotlin_serialization_json", "1.8.0")
-            version("slf4j", "2.0.13")
-            version("exposed", "0.60.0")
-            version("postgresql_jdbc", "42.7.5")
-            version("rabbitmq_amqp_client", "5.20.0")
-            version("coroutines", "1.8.1")
-            version("testcontainers", "1.19.8")
+            version("kotlin", "2.2.20")
+            version("test_logger", "4.0.0")
+            version("kotlin_serialization_json", "1.9.0")
+            version("slf4j", "2.0.17")
+            version("exposed", "1.0.0-rc-2")
+            version("postgresql_jdbc", "42.7.8")
+            version("rabbitmq_amqp_client", "5.27.0")
+            version("coroutines", "1.10.1")
+            version("testcontainers", "1.21.3")
+            version("nexus_staging", "2.0.0")
 
             library("exposed_time", "org.jetbrains.exposed", "exposed-java-time").versionRef("exposed")
             library("exposed_core", "org.jetbrains.exposed", "exposed-core").versionRef("exposed")
@@ -43,6 +44,7 @@ dependencyResolutionManagement {
             plugin("test_logger", "com.adarshr.test-logger").versionRef("test_logger")
             plugin("detekt", "io.gitlab.arturbosch.detekt").versionRef("detekt")
             plugin("kotlin_serialization", "org.jetbrains.kotlin.plugin.serialization").versionRef("kotlin")
+            plugin("nexus.release", "io.github.gradle-nexus.publish-plugin").versionRef("nexus_staging")
 
             bundle(
                 "exposed",

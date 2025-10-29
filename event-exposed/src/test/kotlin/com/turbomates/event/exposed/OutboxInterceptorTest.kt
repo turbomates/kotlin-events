@@ -3,12 +3,12 @@ package com.turbomates.event.exposed
 import com.turbomates.event.Event
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.transaction
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 
 class OutboxInterceptorTest {
     private lateinit var database: Database

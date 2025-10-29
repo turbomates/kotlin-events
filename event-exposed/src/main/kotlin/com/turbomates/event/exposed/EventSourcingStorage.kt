@@ -5,20 +5,20 @@ import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.UUID
-import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.Json
-import org.jetbrains.exposed.dao.id.UUIDTable
-import org.jetbrains.exposed.sql.Database
-import org.jetbrains.exposed.sql.SortOrder
-import org.jetbrains.exposed.sql.batchInsert
-import org.jetbrains.exposed.sql.javatime.datetime
-import org.jetbrains.exposed.sql.json.jsonb
-import org.jetbrains.exposed.sql.selectAll
-import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
+import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.dao.id.UUIDTable
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.javatime.datetime
+import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.batchInsert
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.json.jsonb
 
 class EventSourcingStorage(private val database: Database) {
-    suspend fun get(aggregateRoot: String): List<Event> {
-        return newSuspendedTransaction(Dispatchers.IO, database) {
+    fun get(aggregateRoot: String): List<Event> {
+        return transaction(database) {
             EventSourcingTable
                 .selectAll()
                 .where { EventSourcingTable.rootId eq aggregateRoot }
@@ -27,8 +27,8 @@ class EventSourcingStorage(private val database: Database) {
         }
     }
 
-    suspend fun add(events: List<EventSourcingEvent>) {
-        newSuspendedTransaction(Dispatchers.IO, database) {
+    fun add(events: List<EventSourcingEvent>) {
+        transaction(database) {
             EventSourcingTable.batchInsert(events) { event ->
                 this[EventSourcingTable.id] = UUID.randomUUID()
                 this[EventSourcingTable.rootId] = event.rootId

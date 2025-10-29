@@ -7,12 +7,14 @@ import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.SubscribersRegistry
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.serialization.json.Json
 
 class RabbitQueue(
     private val config: Config,
     private val json: Json,
     private val subscribersRegistry: SubscribersRegistry,
+    private val scope: CoroutineScope,
 ) {
     private val channels = mutableListOf<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
@@ -26,7 +28,8 @@ class RabbitQueue(
                     ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
                     config,
                     subscribers,
-                    json
+                    json,
+                    scope
                 ),
                 ListenerCancelCallback()
             )
