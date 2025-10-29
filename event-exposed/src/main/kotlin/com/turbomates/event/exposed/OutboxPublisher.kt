@@ -79,4 +79,6 @@ internal object EventsTable : UUIDTable("outbox_events") {
         jsonb("event", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now() }
+    val traceparent = text("traceparent").nullable()
+    val spanId = text("span_id").nullable()
 }
