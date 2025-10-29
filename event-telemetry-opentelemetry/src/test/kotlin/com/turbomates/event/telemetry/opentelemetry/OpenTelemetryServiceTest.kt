@@ -20,7 +20,7 @@ import kotlin.test.assertTrue
 
 class OpenTelemetryServiceTest {
     private lateinit var spanExporter: InMemorySpanExporter
-    private lateinit var service: OpenTelemetryService
+    private lateinit var service: com.turbomates.event.telemetry.opentelemetry.OpenTelemetry
 
     @BeforeTest
     fun setup() {
@@ -40,7 +40,7 @@ class OpenTelemetryServiceTest {
             ))
             .buildAndRegisterGlobal()
 
-        service = OpenTelemetryService()
+        service = com.turbomates.event.telemetry.opentelemetry.OpenTelemetry()
     }
 
     @AfterTest

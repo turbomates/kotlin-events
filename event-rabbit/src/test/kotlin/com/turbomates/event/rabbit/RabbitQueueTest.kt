@@ -4,7 +4,7 @@ import com.rabbitmq.client.ConnectionFactory
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
-import com.turbomates.event.NoOpTelemetryService
+import com.turbomates.event.NoOpTelemetry
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.subscriber
 import kotlin.test.Test
@@ -62,7 +62,7 @@ class RabbitQueueTest {
             Json,
             registry,
             scope = this,
-            telemetryService = NoOpTelemetryService()
+            telemetryService = NoOpTelemetry()
         )
         rabbitQueue.run(listOf(QueueConfig(subscriber.queueName("test"), 3, retryDelay = 1.seconds)))
         publisher.publish(event)

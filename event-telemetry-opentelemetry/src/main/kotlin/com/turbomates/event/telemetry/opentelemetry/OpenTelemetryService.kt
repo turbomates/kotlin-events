@@ -1,13 +1,13 @@
 package com.turbomates.event.telemetry.opentelemetry
 
-import com.turbomates.event.TelemetryService
+import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import io.opentelemetry.api.GlobalOpenTelemetry
 import io.opentelemetry.context.Context
 import io.opentelemetry.context.Scope
 import io.opentelemetry.context.propagation.TextMapGetter
 
-class OpenTelemetryService : TelemetryService {
+class OpenTelemetry : Telemetry {
     private val traceparent: String?
         get() = currentHeader("traceparent")
 

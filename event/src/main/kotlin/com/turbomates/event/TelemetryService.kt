@@ -2,7 +2,7 @@ package com.turbomates.event
 
 import kotlinx.serialization.Serializable
 
-interface TelemetryService {
+interface Telemetry {
     fun traceInformation(): TraceInformation
     suspend fun link(
         traceInformation: TraceInformation,
@@ -12,7 +12,7 @@ interface TelemetryService {
     )
 }
 
-class NoOpTelemetryService : TelemetryService {
+class NoOpTelemetry : Telemetry {
     override fun traceInformation(): TraceInformation {
         return TraceInformation(null, null, null)
     }

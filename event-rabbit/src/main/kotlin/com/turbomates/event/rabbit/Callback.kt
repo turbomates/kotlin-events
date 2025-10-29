@@ -6,7 +6,7 @@ import com.rabbitmq.client.DeliverCallback
 import com.rabbitmq.client.Delivery
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
-import com.turbomates.event.TelemetryService
+import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import com.turbomates.event.seriazlier.EventSerializer
 import kotlin.text.toLong
@@ -20,7 +20,7 @@ internal class ListenerDeliveryCallback(
     private val config: QueueConfig,
     private val subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
     private val json: Json,
-    private val telemetryService: TelemetryService,
+    private val telemetryService: Telemetry,
     private val scope: CoroutineScope
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
