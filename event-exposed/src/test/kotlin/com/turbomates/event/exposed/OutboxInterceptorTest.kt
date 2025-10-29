@@ -92,31 +92,26 @@ class OutboxInterceptorTest {
         val testTraceId = "default-trace-id"
         val testSpanId = "default-span-id"
 
-        // Set default provider
-        TelemetryConfig.setDefaultProvider(object : TelemetryContextProvider {
+        // Set provider for this database instance
+        database.telemetryProvider = object : TelemetryContextProvider {
             override fun getCurrentContext() = TelemetryContext(testTraceId, testSpanId)
-        })
+        }
 
-        try {
-            transaction(database) {
-                Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
-                    exec(String(readAllBytes()))
-                }
+        transaction(database) {
+            Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
+                exec(String(readAllBytes()))
             }
+        }
 
-            transaction(database) {
-                // No need to set provider - uses default automatically
-                events.addEvent(TestEvent())
-            }
+        transaction(database) {
+            // No need to set provider - uses database's provider automatically
+            events.addEvent(TestEvent())
+        }
 
-            transaction(database) {
-                val savedEvent = EventsTable.selectAll().first()
-                assertEquals(testTraceId, savedEvent[EventsTable.traceId])
-                assertEquals(testSpanId, savedEvent[EventsTable.spanId])
-            }
-        } finally {
-            // Reset to NoOp for other tests
-            TelemetryConfig.setDefaultProvider(NoOpTelemetryContextProvider)
+        transaction(database) {
+            val savedEvent = EventsTable.selectAll().first()
+            assertEquals(testTraceId, savedEvent[EventsTable.traceId])
+            assertEquals(testSpanId, savedEvent[EventsTable.spanId])
         }
     }
 
@@ -125,39 +120,35 @@ class OutboxInterceptorTest {
         val defaultTraceId = "default-trace"
         val overrideTraceId = "override-trace"
 
-        // Set default provider
-        TelemetryConfig.setDefaultProvider(object : TelemetryContextProvider {
+        // Set provider for database
+        database.telemetryProvider = object : TelemetryContextProvider {
             override fun getCurrentContext() = TelemetryContext(defaultTraceId, "default-span")
-        })
+        }
 
-        try {
-            transaction(database) {
-                Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
-                    exec(String(readAllBytes()))
-                }
+        transaction(database) {
+            Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
+                exec(String(readAllBytes()))
             }
+        }
 
-            // Transaction 1: uses default provider
-            transaction(database) {
-                events.addEvent(TestEvent())
-            }
+        // Transaction 1: uses database's provider
+        transaction(database) {
+            events.addEvent(TestEvent())
+        }
 
-            // Transaction 2: overrides with custom provider
-            transaction(database) {
-                telemetryContextProvider = object : TelemetryContextProvider {
-                    override fun getCurrentContext() = TelemetryContext(overrideTraceId, "override-span")
-                }
-                events.addEvent(TestEvent())
+        // Transaction 2: overrides with custom provider
+        transaction(database) {
+            telemetryContextProvider = object : TelemetryContextProvider {
+                override fun getCurrentContext() = TelemetryContext(overrideTraceId, "override-span")
             }
+            events.addEvent(TestEvent())
+        }
 
-            transaction(database) {
-                val events = EventsTable.selectAll().toList()
-                assertEquals(2, events.size)
-                assertEquals(defaultTraceId, events[0][EventsTable.traceId])
-                assertEquals(overrideTraceId, events[1][EventsTable.traceId])
-            }
-        } finally {
-            TelemetryConfig.setDefaultProvider(NoOpTelemetryContextProvider)
+        transaction(database) {
+            val events = EventsTable.selectAll().toList()
+            assertEquals(2, events.size)
+            assertEquals(defaultTraceId, events[0][EventsTable.traceId])
+            assertEquals(overrideTraceId, events[1][EventsTable.traceId])
         }
     }
     @Serializable

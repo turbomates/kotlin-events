@@ -25,12 +25,10 @@ interface TelemetryContextProvider {
 }
 ```
 
-### 3. TelemetryConfig
-Глобальная конфигурация для установки default провайдера:
+### 3. Database Extension Property
+Extension property для Database, хранящий провайдер для конкретной БД:
 ```kotlin
-object TelemetryConfig {
-    fun setDefaultProvider(provider: TelemetryContextProvider)
-}
+var Database.telemetryProvider: TelemetryContextProvider
 ```
 
 ### 4. Transaction Extension Property
@@ -40,11 +38,12 @@ var Transaction.telemetryContextProvider: TelemetryContextProvider
 ```
 
 Этот подход:
-- ✅ Устанавливается **один раз** при старте приложения
-- ✅ Все транзакции **автоматически** используют default провайдер
-- ✅ Thread-safe (использует Exposed's transactionScope)
+- ✅ **Привязан к Database instance** - нет глобального состояния
+- ✅ Устанавливается **один раз** для Database
+- ✅ Все транзакции **автоматически** используют провайдер базы данных
+- ✅ Thread-safe (WeakHashMap + synchronized + transactionScope)
 - ✅ Можно override для конкретной транзакции (тесты, специальные случаи)
-- ✅ Следует идиоматичному паттерну Kotlin/Exposed
+- ✅ Нет memory leaks (WeakHashMap автоматически очищается)
 
 ### 4. База данных
 Таблица `outbox_events` теперь содержит два дополнительных поля:
@@ -91,13 +90,16 @@ class OpenTelemetryContextProvider : TelemetryContextProvider {
 }
 ```
 
-3. **Установите один раз при старте приложения:**
+3. **Настройте для Database instance:**
 ```kotlin
 fun main() {
     // Настройка OpenTelemetry...
 
-    // Установка default провайдера один раз
-    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+    // Подключение к БД
+    val database = Database.connect(...)
+
+    // Установка провайдера для этой БД один раз
+    database.telemetryProvider = OpenTelemetryContextProvider()
 
     // Теперь все транзакции автоматически используют телеметрию!
     startApplication()
@@ -106,14 +108,14 @@ fun main() {
 
 4. **Используйте в коде без дополнительной настройки:**
 ```kotlin
-// ✅ Все работает автоматически - провайдер уже настроен!
-transaction {
+// ✅ Все работает автоматически - провайдер настроен для database!
+transaction(database) {
     // trace_id и span_id захватываются автоматически
     events.addEvent(OrderCreatedEvent(orderId))
 }
 
 // ✅ Можно override для конкретной транзакции (редко нужно)
-transaction {
+transaction(database) {
     telemetryContextProvider = customProvider
     events.addEvent(SpecialEvent())
 }
@@ -145,16 +147,16 @@ class MicrometerContextProvider(private val tracer: Tracer) : TelemetryContextPr
 }
 ```
 
-3. **Установите при старте (Spring Boot):**
+3. **Настройте для Database (Spring Boot):**
 ```kotlin
 @Configuration
-class TelemetryConfiguration {
+class DatabaseConfiguration(private val tracer: Tracer) {
 
     @Bean
-    fun telemetrySetup(tracer: Tracer): TelemetryContextProvider {
-        val provider = MicrometerContextProvider(tracer)
-        TelemetryConfig.setDefaultProvider(provider)
-        return provider
+    fun database(): Database {
+        val database = Database.connect(...)
+        database.telemetryProvider = MicrometerContextProvider(tracer)
+        return database
     }
 }
 ```
@@ -162,10 +164,10 @@ class TelemetryConfiguration {
 4. **Используйте автоматически:**
 ```kotlin
 @Service
-class MyService {
+class MyService(private val database: Database) {
     fun doWork() {
-        // ✅ Провайдер уже настроен - просто работаем!
-        transaction {
+        // ✅ Провайдер уже настроен для database!
+        transaction(database) {
             events.addEvent(WorkDoneEvent())
         }
     }
@@ -177,21 +179,23 @@ class MyService {
 #### Spring Boot с OpenTelemetry
 ```kotlin
 @Configuration
-class DatabaseTelemetryConfiguration {
+class DatabaseConfiguration {
 
-    @PostConstruct
-    fun setupTelemetry() {
-        // Устанавливаем провайдер один раз при старте
-        TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+    @Bean
+    fun database(): Database {
+        val database = Database.connect(...)
+        // Настраиваем провайдер для этой БД
+        database.telemetryProvider = OpenTelemetryContextProvider()
+        return database
     }
 }
 
 @Service
-class OrderService {
+class OrderService(private val database: Database) {
 
     fun processOrder(order: Order) {
         // ✅ Все работает автоматически!
-        transaction {
+        transaction(database) {
             // Сохраняем заказ
             OrderTable.insert { ... }
 
@@ -207,15 +211,16 @@ class OrderService {
 fun Application.configureDatabases() {
     // Настройка OpenTelemetry...
 
-    // Устанавливаем провайдер один раз
-    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+    // Создаем и настраиваем БД
+    val database = Database.connect(...)
+    database.telemetryProvider = OpenTelemetryContextProvider()
 
     routing {
         post("/orders") {
             val order = call.receive<Order>()
 
             // ✅ Телеметрия работает автоматически
-            transaction {
+            transaction(database) {
                 val orderId = OrderTable.insertAndGetId { ... }
                 events.addEvent(OrderCreatedEvent(orderId))
             }
@@ -232,11 +237,9 @@ fun main() {
     // Инициализация OpenTelemetry
     val openTelemetry = OpenTelemetry.noop() // или ваша настройка
 
-    // Установка провайдера
-    TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
-
-    // Настройка БД
+    // Настройка БД с телеметрией
     val database = Database.connect(...)
+    database.telemetryProvider = OpenTelemetryContextProvider()
 
     // Все готово - телеметрия работает везде!
     transaction(database) {

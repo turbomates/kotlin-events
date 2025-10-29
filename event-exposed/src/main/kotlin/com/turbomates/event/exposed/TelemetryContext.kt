@@ -1,5 +1,6 @@
 package com.turbomates.event.exposed
 
+import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.Transaction
 import org.jetbrains.exposed.sql.transactions.transactionScope
 
@@ -37,68 +38,59 @@ object NoOpTelemetryContextProvider : TelemetryContextProvider {
 }
 
 /**
- * Global configuration for telemetry.
- * Set the default provider once during application startup.
+ * Internal storage for Database-specific telemetry providers.
+ * Uses WeakHashMap to prevent memory leaks when Database instances are garbage collected.
+ */
+private val databaseProviders = java.util.WeakHashMap<Database, TelemetryContextProvider>()
+
+/**
+ * Configure telemetry provider for a specific Database instance.
+ * This provider will be used for all transactions on this database.
  *
  * Example:
  * ```kotlin
- * fun main() {
- *     // Initialize telemetry
- *     TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ * val database = Database.connect(...)
+ * database.telemetryProvider = OpenTelemetryContextProvider()
  *
- *     // Now all transactions will automatically use this provider
- *     transaction {
- *         events.addEvent(MyEvent()) // trace/span captured automatically
- *     }
+ * // Now all transactions on this database use the provider automatically
+ * transaction(database) {
+ *     events.addEvent(MyEvent()) // telemetry captured automatically
  * }
  * ```
  */
-object TelemetryConfig {
-    @Volatile
-    private var _defaultProvider: TelemetryContextProvider = NoOpTelemetryContextProvider
-
-    /**
-     * Get the default telemetry provider.
-     * Returns NoOpTelemetryContextProvider if not set.
-     */
-    val defaultProvider: TelemetryContextProvider
-        get() = _defaultProvider
-
-    /**
-     * Set the default telemetry provider for the application.
-     * This should be called once during application startup.
-     *
-     * @param provider The telemetry context provider to use globally
-     */
-    fun setDefaultProvider(provider: TelemetryContextProvider) {
-        _defaultProvider = provider
+var Database.telemetryProvider: TelemetryContextProvider
+    get() = synchronized(databaseProviders) {
+        databaseProviders[this] ?: NoOpTelemetryContextProvider
     }
-}
+    set(value) = synchronized(databaseProviders) {
+        databaseProviders[this] = value
+    }
 
 /**
  * Extension property to access telemetry context provider for a transaction.
  * Uses Exposed's transactionScope to store provider per transaction (thread-safe).
  *
- * By default, uses TelemetryConfig.defaultProvider which can be set once at startup.
+ * By default, uses the provider configured for the Database instance.
  * Can be overridden for specific transactions (useful for testing).
  *
  * Example usage:
  * ```kotlin
- * // Set once at startup
- * TelemetryConfig.setDefaultProvider(OpenTelemetryContextProvider())
+ * // Configure once per Database
+ * val database = Database.connect(...)
+ * database.telemetryProvider = OpenTelemetryContextProvider()
  *
- * // All transactions automatically use the default provider
- * transaction {
- *     events.addEvent(MyEvent()) // trace/span captured automatically
+ * // All transactions automatically use the database's provider
+ * transaction(database) {
+ *     events.addEvent(MyEvent()) // telemetry captured automatically
  * }
  *
  * // Override for specific transaction (e.g., in tests)
- * transaction {
+ * transaction(database) {
  *     telemetryContextProvider = mockProvider
  *     events.addEvent(TestEvent())
  * }
  * ```
  */
 var Transaction.telemetryContextProvider: TelemetryContextProvider by transactionScope {
-    TelemetryConfig.defaultProvider
+    db.telemetryProvider
 }
