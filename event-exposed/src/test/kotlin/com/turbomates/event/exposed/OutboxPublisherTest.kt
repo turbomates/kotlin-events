@@ -21,7 +21,8 @@ class OutboxPublisherTest {
 
     @BeforeEach
     fun setUp() {
-        val underTest = PostgreSQLContainer("postgres:14").withEnv(mapOf("POSTGRES_USER" to "test", "POSTGRES_PASSWORD" to "test"))
+        val underTest =
+            PostgreSQLContainer("postgres:14").withEnv(mapOf("POSTGRES_USER" to "test", "POSTGRES_PASSWORD" to "test"))
         underTest.start()
         database = Database.connect(
             underTest.jdbcUrl,
@@ -44,6 +45,7 @@ class OutboxPublisherTest {
                 it[EventsTable.id] = event.id
                 it[EventsTable.event] = event.original
                 it[EventsTable.createdAt] = event.createdAt
+                it[EventsTable.traceInformation] = TraceInformation(null, null, null)
             }
         }
         outboxPublisher.start().cancelAndJoin()
