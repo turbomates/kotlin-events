@@ -11,7 +11,8 @@ import kotlinx.serialization.json.Json
 
 class RabbitPublisher(
     private val config: Config,
-    private val json: Json
+    private val json: Json,
+    private val buildProperties: AMQP.BasicProperties.Builder.() -> Unit = {}
 ) : Publisher {
     private val channel: Channel = config.connectionFactory.newConnection().createChannel()
 
@@ -23,6 +24,7 @@ class RabbitPublisher(
         val propsBuilder = AMQP.BasicProperties.Builder()
             .contentType("application/json")
             .deliveryMode(2) // 2 = persistent
+            .apply(buildProperties)
 
         traceInformation?.let { trace ->
             propsBuilder.headers(
