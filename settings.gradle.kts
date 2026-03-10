@@ -3,6 +3,9 @@ rootProject.name = "event"
 include("event")
 include("event-exposed")
 include("event-rabbit")
+include("deferredcommand")
+include("deferredcommand-exposed")
+include("deferredcommand-rabbit")
 
 pluginManagement {
     plugins {
