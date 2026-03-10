@@ -25,6 +25,7 @@ dependencyResolutionManagement {
             version("rabbitmq_amqp_client", "5.20.0")
             version("coroutines", "1.8.1")
             version("testcontainers", "1.19.8")
+            version("nexus_staging", "2.0.0")
 
             library("exposed_time", "org.jetbrains.exposed", "exposed-java-time").versionRef("exposed")
             library("exposed_core", "org.jetbrains.exposed", "exposed-core").versionRef("exposed")
@@ -45,6 +46,7 @@ dependencyResolutionManagement {
             plugin("test_logger", "com.adarshr.test-logger").versionRef("test_logger")
             plugin("detekt", "io.gitlab.arturbosch.detekt").versionRef("detekt")
             plugin("kotlin_serialization", "org.jetbrains.kotlin.plugin.serialization").versionRef("kotlin")
+            plugin("nexus.release", "io.github.gradle-nexus.publish-plugin").versionRef("nexus_staging")
 
             bundle(
                 "exposed",
