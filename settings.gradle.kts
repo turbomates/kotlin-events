@@ -18,7 +18,7 @@ dependencyResolutionManagement {
             version("test_logger", "4.0.0")
             version("kotlin_serialization_json", "1.9.0")
             version("slf4j", "2.0.17")
-            version("exposed", "1.0.0-rc-2")
+            version("exposed", "1.1.1")
             version("postgresql_jdbc", "42.7.8")
             version("rabbitmq_amqp_client", "5.27.0")
             version("coroutines", "1.10.1")

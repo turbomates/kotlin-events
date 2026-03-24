@@ -14,7 +14,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.SortOrder
-import org.jetbrains.exposed.v1.core.dao.id.UUIDTable
+import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.isNull
 import org.jetbrains.exposed.v1.javatime.datetime
