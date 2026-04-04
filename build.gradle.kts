@@ -19,6 +19,12 @@ plugins {
 //val reportMerge by tasks.registering(ReportMergeTask::class) {
 //    output.set(rootProject.buildDir.resolve("reports/detekt/events.xml"))
 //}
+
+kotlin {
+    jvmToolchain(24)
+}
+
+
 group = "com.turbomates"
 version = System.getenv("RELEASE_VERSION") ?: "0.1.0"
 subprojects {

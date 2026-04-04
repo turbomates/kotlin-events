@@ -15,7 +15,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.SortOrder
-import org.jetbrains.exposed.v1.core.dao.id.UUIDTable
+import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.javatime.datetime
@@ -84,7 +84,11 @@ class OutboxPublisher(
 
 internal object DeferredCommandsTable : UUIDTable("deferred_commands") {
     val command =
-        jsonb("command", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, DeferredCommandSerializer)
+        jsonb(
+            "command",
+            Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false },
+            DeferredCommandSerializer
+        )
     val traceInformation =
         jsonb(
             "trace_information", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false },
