@@ -17,7 +17,7 @@ jobs:
       - uses: actions/setup-java@v3
         with:
           distribution: 'adopt'
-          java-version: '21'
+          java-version: '24'
           cache: 'gradle'
       - uses: reviewdog/action-setup@v1
       - name: Run reviewdog
