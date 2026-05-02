@@ -16,6 +16,7 @@ class RabbitQueue(
     private val subscribersRegistry: SubscribersRegistry,
     private val scope: CoroutineScope,
     private val telemetryService: Telemetry,
+    private val errorHandler: (Throwable) -> Unit = {}
 ) {
     private val channels = mutableListOf<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
@@ -31,7 +32,8 @@ class RabbitQueue(
                     subscribers,
                     json,
                     telemetryService,
-                    scope
+                    scope,
+                    errorHandler
                 ),
                 ListenerCancelCallback()
             )

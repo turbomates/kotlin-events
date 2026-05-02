@@ -9,7 +9,6 @@ import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import com.turbomates.event.seriazlier.EventSerializer
-import kotlin.text.toLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -21,7 +20,8 @@ internal class ListenerDeliveryCallback(
     private val subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
     private val json: Json,
     private val telemetryService: Telemetry,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val errorHandler: (Throwable) -> Unit = {}
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
 
@@ -73,7 +73,7 @@ internal class ListenerDeliveryCallback(
                             channel.basicNack(message.envelope.deliveryTag, false, true)
                         }
                     }
-
+                    errorHandler(expected)
                 }
             }
         }
