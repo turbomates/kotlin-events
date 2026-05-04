@@ -16,6 +16,7 @@ class RabbitQueue(
     private val subscribersRegistry: SubscribersRegistry,
     private val scope: CoroutineScope,
     private val telemetryService: Telemetry,
+    private val queueType: QueueType? = null,
     private val errorHandler: (Throwable) -> Unit = {}
 ) {
     private val channels = mutableListOf<Channel>()
@@ -64,6 +65,7 @@ class RabbitQueue(
             prefetchCount = config.defaultPreFetch,
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
+            queueType = queueType,
         )
         val channel = channel(queueConfig)
         channel.run { queueConfig.dlxQueue() }
@@ -79,6 +81,7 @@ class RabbitQueue(
             prefetchCount = config.defaultPreFetch,
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
+            queueType = queueType,
         )
         val channel = channel(queueConfig)
         subscribers().forEach { subscriber ->
