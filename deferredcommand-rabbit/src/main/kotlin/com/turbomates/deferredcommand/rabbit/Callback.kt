@@ -20,7 +20,8 @@ internal class ListenerDeliveryCallback(
     private val subscribers: Map<DeferredCommand.Key<out DeferredCommand>, DeferredCommandSubscriber<out DeferredCommand>>,
     private val json: Json,
     private val telemetryService: Telemetry,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val errorHandler: (Throwable) -> Unit = {}
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
 
@@ -72,6 +73,7 @@ internal class ListenerDeliveryCallback(
                             channel.basicNack(message.envelope.deliveryTag, false, true)
                         }
                     }
+                    errorHandler(expected)
                 }
             }
         }
