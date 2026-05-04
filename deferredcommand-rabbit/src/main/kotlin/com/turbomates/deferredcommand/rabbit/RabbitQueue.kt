@@ -82,14 +82,15 @@ class RabbitQueue(
 
     context(channel: Channel)
     private fun QueueConfig.dlxQueue() {
+        val queueTypeArguments = mapOf("x-queue-type" to resolvedQueueType().value)
         if (!isRetryEnabled()) {
-            channel.queueDeclare(queueName, true, false, false, mapOf())
+            channel.queueDeclare(queueName, true, false, false, queueTypeArguments)
             return
         }
         val exchange = this@RabbitQueue.config.exchange.dlx()
         channel.exchangeDeclare(exchange, BuiltinExchangeType.DIRECT, true)
         channel.queueDeclare(
-            queueName, true, false, false, mapOf(
+            queueName, true, false, false, queueTypeArguments + mapOf(
                 "x-dead-letter-exchange" to exchange,
                 "x-dead-letter-routing-key" to queueName.dlx(),
             )
@@ -97,7 +98,7 @@ class RabbitQueue(
         channel.queueBind(queueName, config.exchange.dlx(), queueName)
 
         channel.queueDeclare(
-            queueName.dlx(), true, false, false, mapOf(
+            queueName.dlx(), true, false, false, queueTypeArguments + mapOf(
                 "x-dead-letter-exchange" to exchange,
                 "x-dead-letter-routing-key" to queueName,
                 "x-message-ttl" to retryDelay.inWholeMilliseconds
@@ -105,8 +106,12 @@ class RabbitQueue(
         )
         channel.queueBind(queueName.dlx(), config.exchange.dlx(), queueName.dlx())
 
-        channel.queueDeclare(queueName.pl(), true, false, false, mapOf())
+        channel.queueDeclare(queueName.pl(), true, false, false, queueTypeArguments)
         channel.queueBind(queueName.pl(), config.exchange, queueName.pl())
+    }
+
+    private fun QueueConfig.resolvedQueueType(): QueueType {
+        return queueType ?: config.defaultQueueType
     }
 
     fun close() {

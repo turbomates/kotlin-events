@@ -11,6 +11,7 @@ data class QueueConfig(
     var maxRetries: Int = 0,
     var prefetchCount: Int = 100,
     var retryDelay: Duration = 1.minutes,
+    var queueType: QueueType? = null,
 ) {
     fun isRetryEnabled(): Boolean = maxRetries > 0
 

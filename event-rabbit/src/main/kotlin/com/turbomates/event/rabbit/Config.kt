@@ -12,4 +12,5 @@ data class Config(
     val defaultPreFetch: Int = 100,
     val defaultMaxRetries: Int = 3,
     val defaultRetryDelay: Duration = 1.minutes,
+    val defaultQueueType: QueueType = QueueType.CLASSIC,
 )
