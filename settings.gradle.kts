@@ -10,18 +10,18 @@ include(":event-telemetry-opentelemetry")
 
 pluginManagement {
     plugins {
-        id("org.jetbrains.kotlin.jvm") version "2.2.20"
+        id("org.jetbrains.kotlin.jvm") version "2.3.0"
     }
 }
 dependencyResolutionManagement {
     versionCatalogs {
         create("deps") {
             version("detekt", "1.23.6")
-            version("kotlin", "2.2.20")
+            version("kotlin", "2.3.0")
             version("test_logger", "4.0.0")
-            version("kotlin_serialization_json", "1.9.0")
+            version("kotlin_serialization_json", "1.11.0")
             version("slf4j", "2.0.17")
-            version("exposed", "1.1.1")
+            version("exposed", "1.2.0")
             version("postgresql_jdbc", "42.7.8")
             version("rabbitmq_amqp_client", "5.27.0")
             version("coroutines", "1.10.1")

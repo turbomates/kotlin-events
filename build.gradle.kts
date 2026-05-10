@@ -2,7 +2,7 @@ import java.time.Duration
 
 plugins {
     java
-    kotlin("jvm") version "2.2.20"
+    kotlin("jvm") version "2.3.0"
     alias(deps.plugins.nexus.release)
     id("signing") apply true
     id("maven-publish") apply true
