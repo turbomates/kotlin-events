@@ -14,7 +14,7 @@ data class QueueConfig(
     var queueType: QueueType? = null,
     /**
      * Maximum number of messages this subscriber processes concurrently. Each
-     * consumer gets its own limiter, so distribution stays fair across
+     * consumer gets its own pool of workers, so distribution stays fair across
      * subscribers and total load is bounded by `maxConcurrency * subscribers`.
      * Keep [prefetchCount] greater than or equal to this value.
      */

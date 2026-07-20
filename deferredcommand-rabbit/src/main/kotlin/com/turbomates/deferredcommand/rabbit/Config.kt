@@ -15,8 +15,10 @@ data class Config(
     val defaultQueueType: QueueType = QueueType.CLASSIC,
     /**
      * Default upper bound on the number of messages a single subscriber
-     * processes concurrently, applied to every consumer that does not override
-     * [QueueConfig.maxConcurrency].
+     * processes concurrently. Like the other `default*` values, it is only used
+     * to build the [QueueConfig] auto-created for a subscriber that has no
+     * explicit entry in the list passed to [RabbitQueue.run]; a [QueueConfig]
+     * supplied there carries its own [QueueConfig.maxConcurrency].
      *
      * Each consumer drains its deliveries through this many worker coroutines,
      * so total load is bounded by `maxConcurrency * subscribers` — keeping a
