@@ -35,7 +35,7 @@ internal class ListenerDeliveryCallback(
         // One worker per unit of concurrency: a subscriber processes at most
         // maxConcurrency messages at once, and with maxConcurrency == 1 a single
         // worker draining the channel preserves delivery order (FIFO).
-        repeat(config.maxConcurrency.coerceAtLeast(1)) {
+        repeat(config.maxConcurrency) {
             scope.launch {
                 for (delivery in deliveries) {
                     try {

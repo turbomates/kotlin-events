@@ -23,6 +23,7 @@ class RabbitQueue(
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
     val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit =
         { config, subscribers ->
+            config.validateConcurrency()
             basicQos(config.prefetchCount)
             basicConsume(
                 config.queueName,
@@ -124,6 +125,17 @@ class RabbitQueue(
 
     private fun QueueConfig.resolvedQueueType(): QueueType {
         return queueType ?: config.defaultQueueType
+    }
+
+    private fun QueueConfig.validateConcurrency() {
+        require(maxConcurrency >= 1) {
+            "maxConcurrency must be >= 1 (was $maxConcurrency) for queue '$queueName'"
+        }
+        // prefetchCount == 0 means unlimited prefetch in RabbitMQ.
+        require(prefetchCount == 0 || prefetchCount >= maxConcurrency) {
+            "prefetchCount ($prefetchCount) must be 0 (unlimited) or >= maxConcurrency " +
+                "($maxConcurrency) for queue '$queueName'"
+        }
     }
 
     fun close() {
