@@ -13,4 +13,19 @@ data class Config(
     val defaultMaxRetries: Int = 3,
     val defaultRetryDelay: Duration = 1.minutes,
     val defaultQueueType: QueueType = QueueType.CLASSIC,
+    /**
+     * Default upper bound on the number of messages a single subscriber
+     * processes concurrently, applied to every consumer that does not override
+     * [QueueConfig.maxConcurrency].
+     *
+     * Every delivered message is dispatched to its own coroutine, so without a
+     * limit the effective concurrency per subscriber equals its prefetch, and
+     * across all subscribers it is `prefetch * subscribers` — enough to exhaust
+     * a downstream resource such as a database connection pool. A per-subscriber
+     * limit keeps distribution fair (no subscriber can monopolise the pool) and
+     * bounds total load at `maxConcurrency * subscribers`. Keep
+     * [defaultPreFetch] greater than or equal to this value so the broker can
+     * buffer enough messages to hide delivery latency.
+     */
+    val defaultMaxConcurrency: Int = 1,
 )

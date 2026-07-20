@@ -12,6 +12,13 @@ data class QueueConfig(
     var prefetchCount: Int = 100,
     var retryDelay: Duration = 1.minutes,
     var queueType: QueueType? = null,
+    /**
+     * Maximum number of messages this subscriber processes concurrently. Each
+     * consumer gets its own limiter, so distribution stays fair across
+     * subscribers and total load is bounded by `maxConcurrency * subscribers`.
+     * Keep [prefetchCount] greater than or equal to this value.
+     */
+    var maxConcurrency: Int = 1,
 ) {
     fun isRetryEnabled(): Boolean = maxRetries > 0
 
