@@ -146,8 +146,10 @@ class RabbitQueue(
 
     fun close() {
         workerScope.cancel()
-        connections.forEach { it.close() }
-        channels.forEach { it.close() }
+        // Closing a connection also closes its channels, so close channels first and
+        // ignore "already closed" errors to keep shutdown best-effort.
+        channels.forEach { runCatching { it.close() } }
+        connections.forEach { runCatching { it.close() } }
     }
 
     data class ChannelInfo(val queue: String, val exchange: String, val channel: Channel)
