@@ -10,6 +10,7 @@ import com.turbomates.deferredcommand.serializer.DeferredCommandSerializer
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -25,56 +26,83 @@ internal class ListenerDeliveryCallback(
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
 
-    @Suppress("UNCHECKED_CAST")
-    override fun handle(consumerTag: String, message: Delivery) {
-        scope.launch {
-            val carrier = message.properties.headers ?: emptyMap()
-            val traceInformation = TraceInformation(
-                carrier.stringHeader(QueueConfig.TRACEPARENT_HEADER),
-                carrier.stringHeader(QueueConfig.TRACESTATE_HEADER),
-                carrier.stringHeader(QueueConfig.BAGGAGE_HEADER),
-            )
-            val attributes = mapOf(
-                "messaging.rabbitmq.delivery_tag" to message.envelope.deliveryTag.toString(),
-                "messaging.retry_count" to message.properties.retryCount().toString(),
-                "messaging.rabbitmq.routing_key" to message.envelope.routingKey,
-                "messaging.rabbitmq.exchange" to channelInfo.exchange,
-                "messaging.rabbitmq.queue" to config.queueName,
-                "messaging.broker" to "rabbitmq",
-            )
-            telemetryService.link(traceInformation, "deferredcommand.rabbit.worker", attributes) {
-                val commandJsonString = String(message.body)
-                try {
-                    logger.info("Deferred command $commandJsonString accepted")
-                    val command = json.decodeFromString(DeferredCommandSerializer, commandJsonString)
-                    val callback = subscribers[command.key] as? DeferredCommandSubscriber<DeferredCommand>
-                    callback?.invoke(command)
-                    channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
-                } catch (expected: Throwable) {
-                    logger.error("Broken deferred command: $commandJsonString. Message: ${expected.message}", expected)
-                    with(channelInfo) {
-                        if (config.isRetryEnabled()) {
-                            if (message.properties.retryCount() >= config.maxRetries) {
-                                logger.error(
-                                    "Couldn't process message after ${config.maxRetries} retries: $commandJsonString",
-                                    expected
-                                )
-                                channel.basicPublish(
-                                    exchange,
-                                    config.queueName.pl(),
-                                    message.properties.withExceptionInfo(expected),
-                                    message.body
-                                )
-                                channel.basicAck(message.envelope.deliveryTag, false)
-                            } else {
-                                channel.basicReject(message.envelope.deliveryTag, false)
-                            }
-                        } else {
-                            channel.basicNack(message.envelope.deliveryTag, false, true)
-                        }
+    // Unbounded from the channel's side, but the broker never delivers more than
+    // prefetchCount unacked messages, so at most prefetchCount deliveries ever sit
+    // in the buffer waiting for a free worker. trySend therefore never rejects.
+    private val deliveries = Channel<Delivery>(Channel.UNLIMITED)
+
+    init {
+        // One worker per unit of concurrency: a subscriber processes at most
+        // maxConcurrency messages at once, and with maxConcurrency == 1 a single
+        // worker draining the channel preserves delivery order (FIFO).
+        repeat(config.maxConcurrency.coerceAtLeast(1)) {
+            scope.launch {
+                for (delivery in deliveries) {
+                    try {
+                        process(delivery)
+                    } catch (expected: Throwable) {
+                        logger.error("Failed to process delivery from ${config.queueName}", expected)
+                        errorHandler(expected)
                     }
-                    errorHandler(expected)
                 }
+            }
+        }
+    }
+
+    override fun handle(consumerTag: String, message: Delivery) {
+        // Never suspends, never rejects: the delivery is buffered and waits in the
+        // channel until one of the maxConcurrency workers is free to process it.
+        deliveries.trySend(message)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun process(message: Delivery) {
+        val carrier = message.properties.headers ?: emptyMap()
+        val traceInformation = TraceInformation(
+            carrier.stringHeader(QueueConfig.TRACEPARENT_HEADER),
+            carrier.stringHeader(QueueConfig.TRACESTATE_HEADER),
+            carrier.stringHeader(QueueConfig.BAGGAGE_HEADER),
+        )
+        val attributes = mapOf(
+            "messaging.rabbitmq.delivery_tag" to message.envelope.deliveryTag.toString(),
+            "messaging.retry_count" to message.properties.retryCount().toString(),
+            "messaging.rabbitmq.routing_key" to message.envelope.routingKey,
+            "messaging.rabbitmq.exchange" to channelInfo.exchange,
+            "messaging.rabbitmq.queue" to config.queueName,
+            "messaging.broker" to "rabbitmq",
+        )
+        telemetryService.link(traceInformation, "deferredcommand.rabbit.worker", attributes) {
+            val commandJsonString = String(message.body)
+            try {
+                logger.info("Deferred command $commandJsonString accepted")
+                val command = json.decodeFromString(DeferredCommandSerializer, commandJsonString)
+                val callback = subscribers[command.key] as? DeferredCommandSubscriber<DeferredCommand>
+                callback?.invoke(command)
+                channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
+            } catch (expected: Throwable) {
+                logger.error("Broken deferred command: $commandJsonString. Message: ${expected.message}", expected)
+                with(channelInfo) {
+                    if (config.isRetryEnabled()) {
+                        if (message.properties.retryCount() >= config.maxRetries) {
+                            logger.error(
+                                "Couldn't process message after ${config.maxRetries} retries: $commandJsonString",
+                                expected
+                            )
+                            channel.basicPublish(
+                                exchange,
+                                config.queueName.pl(),
+                                message.properties.withExceptionInfo(expected),
+                                message.body
+                            )
+                            channel.basicAck(message.envelope.deliveryTag, false)
+                        } else {
+                            channel.basicReject(message.envelope.deliveryTag, false)
+                        }
+                    } else {
+                        channel.basicNack(message.envelope.deliveryTag, false, true)
+                    }
+                }
+                errorHandler(expected)
             }
         }
     }

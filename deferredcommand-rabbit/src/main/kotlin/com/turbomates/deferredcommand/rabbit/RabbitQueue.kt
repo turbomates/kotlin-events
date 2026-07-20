@@ -63,6 +63,7 @@ class RabbitQueue(
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
             queueType = queueType,
+            maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
         channel.run { queueConfig.dlxQueue() }
@@ -77,6 +78,7 @@ class RabbitQueue(
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
             queueType = queueType,
+            maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
         subscribers().forEach { subscriber ->
