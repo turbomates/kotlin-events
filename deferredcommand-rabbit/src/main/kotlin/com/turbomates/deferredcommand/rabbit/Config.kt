@@ -24,6 +24,10 @@ data class Config(
      * so total load is bounded by `maxConcurrency * subscribers` — keeping a
      * downstream resource such as a database connection pool from being
      * exhausted — and no subscriber can monopolise it via a burst.
+     *
+     * Affects ordering: the default of 1 processes deliveries strictly in order
+     * (FIFO); a higher value processes them in parallel and no longer preserves
+     * delivery order. See [QueueConfig.maxConcurrency].
      */
     val defaultMaxConcurrency: Int = 1,
 )

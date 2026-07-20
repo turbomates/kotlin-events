@@ -17,6 +17,11 @@ data class QueueConfig(
      * consumer gets its own pool of workers, so distribution stays fair across
      * subscribers and total load is bounded by `maxConcurrency * subscribers`.
      * Keep [prefetchCount] greater than or equal to this value.
+     *
+     * Affects ordering: a value of 1 processes deliveries strictly in order
+     * (FIFO), one at a time. Any higher value processes them in parallel and no
+     * longer preserves delivery order — do not raise it for subscribers that
+     * require ordered processing.
      */
     var maxConcurrency: Int = 1,
 ) {

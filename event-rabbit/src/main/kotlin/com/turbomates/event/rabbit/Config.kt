@@ -28,6 +28,10 @@ data class Config(
      * bounds total load at `maxConcurrency * subscribers`. Keep
      * [defaultPreFetch] greater than or equal to this value so the broker can
      * buffer enough messages to hide delivery latency.
+     *
+     * Affects ordering: the default of 1 processes deliveries strictly in order
+     * (FIFO); a higher value processes them in parallel and no longer preserves
+     * delivery order. See [QueueConfig.maxConcurrency].
      */
     val defaultMaxConcurrency: Int = 1,
 )
