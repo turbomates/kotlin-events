@@ -55,6 +55,12 @@ internal class ListenerDeliveryCallback(
         deliveries.trySend(message)
     }
 
+    // Closes the channel so the worker coroutines drain the buffer and finish
+    // their receive loop; without this they would run until the scope is cancelled.
+    fun stop() {
+        deliveries.close()
+    }
+
     @Suppress("UNCHECKED_CAST")
     private suspend fun process(message: Delivery) {
         val carrier = message.properties.headers ?: emptyMap()

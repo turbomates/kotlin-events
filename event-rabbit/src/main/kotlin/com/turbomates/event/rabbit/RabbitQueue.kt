@@ -21,24 +21,22 @@ class RabbitQueue(
 ) {
     private val channels = mutableListOf<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
+    private val deliveryCallbacks = mutableListOf<ListenerDeliveryCallback>()
     val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit =
         { config, subscribers ->
             config.validateConcurrency()
             basicQos(config.prefetchCount)
-            basicConsume(
-                config.queueName,
-                false,
-                ListenerDeliveryCallback(
-                    ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
-                    config,
-                    subscribers,
-                    json,
-                    telemetryService,
-                    scope,
-                    errorHandler
-                ),
-                ListenerCancelCallback()
+            val callback = ListenerDeliveryCallback(
+                ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
+                config,
+                subscribers,
+                json,
+                telemetryService,
+                scope,
+                errorHandler
             )
+            deliveryCallbacks.add(callback)
+            basicConsume(config.queueName, false, callback, ListenerCancelCallback())
         }
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
@@ -139,6 +137,7 @@ class RabbitQueue(
     }
 
     fun close() {
+        deliveryCallbacks.forEach { it.stop() }
         connections.forEach { it.close() }
         channels.forEach { it.close() }
     }

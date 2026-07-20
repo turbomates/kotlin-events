@@ -77,6 +77,7 @@ class RabbitQueueTest {
                 cancel()
             }
         }
+        rabbitQueue.close()
 
         assertEquals(4, subscriber.count)
     }
@@ -125,6 +126,7 @@ class RabbitQueueTest {
                 cancel()
             }
         }
+        rabbitQueue.close()
 
         assertEquals(1, subscriber.count)
         assertEquals(expectedTrace, telemetry.lastTraceInformation)
