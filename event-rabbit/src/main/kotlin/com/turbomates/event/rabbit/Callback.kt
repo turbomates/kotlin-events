@@ -9,7 +9,9 @@ import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import com.turbomates.event.seriazlier.EventSerializer
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -25,56 +27,87 @@ internal class ListenerDeliveryCallback(
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
 
-    @Suppress("UNCHECKED_CAST")
-    override fun handle(consumerTag: String, message: Delivery) {
-        scope.launch {
-            val carrier = message.properties.headers ?: emptyMap()
-            val traceInformation = TraceInformation(
-                carrier[QueueConfig.TRACEPARENT_HEADER] as? String,
-                carrier[QueueConfig.TRACESTATE_HEADER] as? String,
-                carrier[QueueConfig.BAGGAGE_HEADER] as? String,
-            )
-            val attributes = mapOf<String, String>(
-                "messaging.rabbitmq.delivery_tag" to message.envelope.deliveryTag.toString(),
-                "messaging.retry_count" to message.properties.retryCount().toString(),
-                "messaging.rabbitmq.routing_key" to message.envelope.routingKey,
-                "messaging.rabbitmq.exchange" to channelInfo.exchange,
-                "messaging.rabbitmq.queue" to config.queueName,
-                "messaging.broker" to "rabbitmq",
-            )
-            telemetryService.link(traceInformation, "rabbit.worker", attributes) {
-                val eventJsonString = String(message.body)
-                try {
-                    logger.info("Event $eventJsonString accepted ")
-                    val event = json.decodeFromString(EventSerializer, eventJsonString)
-                    val callback = subscribers[event.key] as? EventSubscriber<Event>
-                    callback?.invoke(event)
-                    channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
-                } catch (expected: Throwable) {
-                    logger.error("Broken event: $eventJsonString. Message: ${expected.message}", expected)
-                    with(channelInfo) {
-                        if (config.isRetryEnabled()) {
-                            if (message.properties.retryCount() >= config.maxRetries) {
-                                logger.error(
-                                    "Couldn't process message after ${config.maxRetries} retries: $eventJsonString",
-                                    expected
-                                )
-                                channel.basicPublish(
-                                    exchange,
-                                    config.queueName.pl(),
-                                    message.properties.withExceptionInfo(expected),
-                                    message.body
-                                )
-                                channel.basicAck(message.envelope.deliveryTag, false)
-                            } else {
-                                channel.basicReject(message.envelope.deliveryTag, false)
-                            }
-                        } else {
-                            channel.basicNack(message.envelope.deliveryTag, false, true)
-                        }
+    // Unbounded from the channel's side, but the broker never delivers more than
+    // prefetchCount unacked messages, so at most prefetchCount deliveries ever sit
+    // in the buffer waiting for a free worker. trySend therefore never rejects.
+    private val deliveries = Channel<Delivery>(Channel.UNLIMITED)
+
+    init {
+        // One worker per unit of concurrency: a subscriber processes at most
+        // maxConcurrency messages at once, and with maxConcurrency == 1 a single
+        // worker draining the channel preserves delivery order (FIFO).
+        repeat(config.maxConcurrency) {
+            scope.launch {
+                for (delivery in deliveries) {
+                    try {
+                        process(delivery)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (expected: Throwable) {
+                        logger.error("Failed to process delivery from ${config.queueName}", expected)
+                        errorHandler(expected)
                     }
-                    errorHandler(expected)
                 }
+            }
+        }
+    }
+
+    override fun handle(consumerTag: String, message: Delivery) {
+        // Never suspends, never rejects: the delivery is buffered and waits in the
+        // channel until one of the maxConcurrency workers is free to process it.
+        deliveries.trySend(message)
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private suspend fun process(message: Delivery) {
+        val carrier = message.properties.headers ?: emptyMap()
+        val traceInformation = TraceInformation(
+            carrier[QueueConfig.TRACEPARENT_HEADER] as? String,
+            carrier[QueueConfig.TRACESTATE_HEADER] as? String,
+            carrier[QueueConfig.BAGGAGE_HEADER] as? String,
+        )
+        val attributes = mapOf<String, String>(
+            "messaging.rabbitmq.delivery_tag" to message.envelope.deliveryTag.toString(),
+            "messaging.retry_count" to message.properties.retryCount().toString(),
+            "messaging.rabbitmq.routing_key" to message.envelope.routingKey,
+            "messaging.rabbitmq.exchange" to channelInfo.exchange,
+            "messaging.rabbitmq.queue" to config.queueName,
+            "messaging.broker" to "rabbitmq",
+        )
+        telemetryService.link(traceInformation, "rabbit.worker", attributes) {
+            val eventJsonString = String(message.body)
+            try {
+                logger.info("Event $eventJsonString accepted ")
+                val event = json.decodeFromString(EventSerializer, eventJsonString)
+                val callback = subscribers[event.key] as? EventSubscriber<Event>
+                callback?.invoke(event)
+                channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (expected: Throwable) {
+                logger.error("Broken event: $eventJsonString. Message: ${expected.message}", expected)
+                with(channelInfo) {
+                    if (config.isRetryEnabled()) {
+                        if (message.properties.retryCount() >= config.maxRetries) {
+                            logger.error(
+                                "Couldn't process message after ${config.maxRetries} retries: $eventJsonString",
+                                expected
+                            )
+                            channel.basicPublish(
+                                exchange,
+                                config.queueName.pl(),
+                                message.properties.withExceptionInfo(expected),
+                                message.body
+                            )
+                            channel.basicAck(message.envelope.deliveryTag, false)
+                        } else {
+                            channel.basicReject(message.envelope.deliveryTag, false)
+                        }
+                    } else {
+                        channel.basicNack(message.envelope.deliveryTag, false, true)
+                    }
+                }
+                errorHandler(expected)
             }
         }
     }

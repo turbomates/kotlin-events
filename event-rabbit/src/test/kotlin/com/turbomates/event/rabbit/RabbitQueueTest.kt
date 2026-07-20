@@ -74,6 +74,7 @@ class RabbitQueueTest {
                 cancel()
             }
         }
+        rabbitQueue.close()
 
         assertEquals(4, subscriber.count)
     }

@@ -8,6 +8,9 @@ import com.turbomates.deferredcommand.DeferredCommandsSubscriber
 import com.turbomates.deferredcommand.SubscribersRegistry
 import com.turbomates.event.Telemetry
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 
 class RabbitQueue(
@@ -21,8 +24,12 @@ class RabbitQueue(
 ) {
     private val channels = mutableListOf<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
+    // A child of the caller's scope shared by every consumer's workers: cancelling
+    // the caller's scope stops them, and close() cancels just this scope.
+    private val workerScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     val consumer: Channel.(QueueConfig, Map<DeferredCommand.Key<out DeferredCommand>, DeferredCommandSubscriber<out DeferredCommand>>) -> Unit =
         { queueConfig, subscribers ->
+            queueConfig.validateConcurrency()
             basicQos(queueConfig.prefetchCount)
             basicConsume(
                 queueConfig.queueName,
@@ -33,7 +40,7 @@ class RabbitQueue(
                     subscribers,
                     json,
                     telemetryService,
-                    scope,
+                    workerScope,
                     errorHandler
                 ),
                 ListenerCancelCallback()
@@ -63,6 +70,7 @@ class RabbitQueue(
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
             queueType = queueType,
+            maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
         channel.run { queueConfig.dlxQueue() }
@@ -77,6 +85,7 @@ class RabbitQueue(
             maxRetries = config.defaultMaxRetries,
             retryDelay = config.defaultRetryDelay,
             queueType = queueType,
+            maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
         subscribers().forEach { subscriber ->
@@ -119,9 +128,23 @@ class RabbitQueue(
         return queueType ?: config.defaultQueueType
     }
 
+    private fun QueueConfig.validateConcurrency() {
+        require(maxConcurrency >= 1) {
+            "maxConcurrency must be >= 1 (was $maxConcurrency) for queue '$queueName'"
+        }
+        // prefetchCount == 0 means unlimited prefetch in RabbitMQ.
+        require(prefetchCount == 0 || prefetchCount >= maxConcurrency) {
+            "prefetchCount ($prefetchCount) must be 0 (unlimited) or >= maxConcurrency " +
+                "($maxConcurrency) for queue '$queueName'"
+        }
+    }
+
     fun close() {
-        connections.forEach { it.close() }
-        channels.forEach { it.close() }
+        workerScope.cancel()
+        // Closing a connection also closes its channels, so close channels first and
+        // ignore "already closed" errors to keep shutdown best-effort.
+        channels.forEach { runCatching { it.close() } }
+        connections.forEach { runCatching { it.close() } }
     }
 
     data class ChannelInfo(val queue: String, val exchange: String, val channel: Channel)
