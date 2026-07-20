@@ -8,6 +8,9 @@ import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.Telemetry
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.serialization.json.Json
 
 class RabbitQueue(
@@ -21,22 +24,27 @@ class RabbitQueue(
 ) {
     private val channels = mutableListOf<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
-    private val deliveryCallbacks = mutableListOf<ListenerDeliveryCallback>()
+    // A child of the caller's scope shared by every consumer's workers: cancelling
+    // the caller's scope stops them, and close() cancels just this scope.
+    private val workerScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
     val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit =
         { config, subscribers ->
             config.validateConcurrency()
             basicQos(config.prefetchCount)
-            val callback = ListenerDeliveryCallback(
-                ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
-                config,
-                subscribers,
-                json,
-                telemetryService,
-                scope,
-                errorHandler
+            basicConsume(
+                config.queueName,
+                false,
+                ListenerDeliveryCallback(
+                    ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
+                    config,
+                    subscribers,
+                    json,
+                    telemetryService,
+                    workerScope,
+                    errorHandler
+                ),
+                ListenerCancelCallback()
             )
-            deliveryCallbacks.add(callback)
-            basicConsume(config.queueName, false, callback, ListenerCancelCallback())
         }
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
@@ -137,7 +145,7 @@ class RabbitQueue(
     }
 
     fun close() {
-        deliveryCallbacks.forEach { it.stop() }
+        workerScope.cancel()
         connections.forEach { it.close() }
         channels.forEach { it.close() }
     }

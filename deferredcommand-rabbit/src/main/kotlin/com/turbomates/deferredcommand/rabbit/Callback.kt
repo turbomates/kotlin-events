@@ -9,6 +9,7 @@ import com.turbomates.deferredcommand.DeferredCommandSubscriber
 import com.turbomates.deferredcommand.serializer.DeferredCommandSerializer
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
@@ -40,6 +41,8 @@ internal class ListenerDeliveryCallback(
                 for (delivery in deliveries) {
                     try {
                         process(delivery)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
                     } catch (expected: Throwable) {
                         logger.error("Failed to process delivery from ${config.queueName}", expected)
                         errorHandler(expected)
@@ -53,12 +56,6 @@ internal class ListenerDeliveryCallback(
         // Never suspends, never rejects: the delivery is buffered and waits in the
         // channel until one of the maxConcurrency workers is free to process it.
         deliveries.trySend(message)
-    }
-
-    // Closes the channel so the worker coroutines drain the buffer and finish
-    // their receive loop; without this they would run until the scope is cancelled.
-    fun stop() {
-        deliveries.close()
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -85,6 +82,8 @@ internal class ListenerDeliveryCallback(
                 val callback = subscribers[command.key] as? DeferredCommandSubscriber<DeferredCommand>
                 callback?.invoke(command)
                 channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
             } catch (expected: Throwable) {
                 logger.error("Broken deferred command: $commandJsonString. Message: ${expected.message}", expected)
                 with(channelInfo) {
