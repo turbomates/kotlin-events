@@ -43,7 +43,8 @@ The project is organized into four modules with clear separation of concerns:
 Foundation module providing core event-driven abstractions. All other modules depend on this.
 
 **Key abstractions:**
-- `Event` (abstract class): Base class for all events with `Event.Key<T>` for type-safe routing
+- `Event` (abstract class): Base class for all events with `Event.Key<T>` for type-safe routing and an
+  optional `partitionKey` (`@Transient`, override with a getter) that keeps a stream of events together
 - `Publisher` (interface): Core interface for event publication using suspend functions
 - `LocalPublisher`: In-process synchronous event publisher
 - `SubscribersRegistry`: Type-safe registry mapping `Event.Key<T>` to subscribers
@@ -57,13 +58,17 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 
 **Key components:**
 - `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore`
-- `OutboxPublisher`: Background worker that polls `outbox_events` table and publishes events
-- `PublicEvent`: Wrapper with UUID, timestamp, and trace information for persistence
+- `OutboxPublisher`: Background worker that sweeps the buckets of `outbox_events` and publishes events
+- `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
+- `OutboxBuckets`: Bucket count (compile time constant) and `partitionKey ?: eventId` bucket derivation
+- `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
+- `OutboxMetrics`: Per-bucket lag, batch size, owned buckets (`LoggingOutboxMetrics`, `InMemoryOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
-- `EventsTable`: Database table for outbox events (jsonb event, trace_information, published_at)
+- `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
+- `OutboxSettingsTable`: Bucket count the table was initialized with, checked on startup
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
-**Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine polls unpublished events and delegates to a chain of Publishers.
+**Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine sweeps buckets, locks one bucket at a time and delegates its batch to a chain of Publishers.
 
 ### event-rabbit (RabbitMQ Integration)
 Provides RabbitMQ distribution with retry/dead-letter queue handling.
@@ -85,10 +90,19 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 
 ### Outbox Pattern Flow
 1. Application raises event during transaction: `eventStore.addEvent(event)`
-2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically
-3. `OutboxPublisher` polls unpublished events in background coroutine
-4. For each event, calls all publishers in chain (LocalPublisher, RabbitPublisher, etc.)
-5. Marks event as published (sets `published_at` timestamp)
+2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically, each row
+   carrying the bucket of `partitionKey ?: eventId`
+3. `OutboxPublisher` sweeps the buckets in a background coroutine, starting at a rotating position
+4. Each bucket batch runs in its own transaction guarded by a non blocking advisory lock, buckets held
+   by another worker are skipped
+5. For each event, calls all publishers in chain (LocalPublisher, RabbitPublisher, etc.)
+6. Removes the published row inside the same transaction
+
+### Outbox Buckets
+`OutboxBuckets.COUNT` describes the data already written, not a deployment: changing it re-maps every
+partition key. It is a compile time constant, mirrored in `outbox_settings.bucket_count`, and
+`OutboxPublisher.start()` throws `OutboxBucketCountMismatchException` when the two disagree.
+`batchSize` is per bucket, a sweep may publish `batchSize * OutboxBuckets.COUNT` events.
 
 ### Event Definition
 ```kotlin

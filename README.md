@@ -6,6 +6,8 @@ A Kotlin library for building event-driven architectures with support for transa
 
 - **Event-Driven Architecture**: Type-safe event publishing and subscription with Kotlin coroutines
 - **Transactional Outbox Pattern**: Ensure atomicity between business data and event publishing
+- **Partitioned Outbox**: Events are spread over buckets so several workers publish in parallel while
+  events of one partition key stay in order
 - **RabbitMQ Integration**: Distributed event messaging with automatic retry and dead-letter queue handling
 - **Distributed Tracing**: OpenTelemetry integration with W3C trace context propagation
 - **Event Sourcing**: Built-in support for event sourcing patterns
@@ -48,6 +50,26 @@ class OrderCreated(
     companion object : Key<OrderCreated>
 }
 ```
+
+An event can name the stream it belongs to with `partitionKey`. The outbox keeps events of one
+partition key in the same bucket, so they are published by one worker, in order, while other buckets
+are published in parallel. Override it with a getter, the property is `@Transient` and never reaches
+the payload:
+
+```kotlin
+@Serializable
+data class AccountTransactionApplied(
+    @Serializable(with = UUIDSerializer::class) val id: UUID,
+    @Serializable(with = UUIDSerializer::class) val userId: UUID
+) : Event() {
+    override val key get() = Companion
+    override val partitionKey get() = userId
+
+    companion object : Key<AccountTransactionApplied>
+}
+```
+
+Events without a partition key fall back to their own outbox id and spread evenly over the buckets.
 
 ### 2. Create a Subscriber
 
@@ -128,8 +150,8 @@ val publishers = listOf(
 val outboxPublisher = OutboxPublisher(
     database = database,
     publishers = publishers,
-    batchSize = 100,
-    delay = 1000L // Poll every 1 second
+    batchSize = 100,                     // events per bucket, not per sweep
+    delay = Duration.parse("1s")         // pause between sweeps
 )
 
 outboxPublisher.start()
@@ -138,9 +160,66 @@ outboxPublisher.start()
 **How it works:**
 
 1. Events are persisted to the database in the same transaction as your business data
-2. A background worker polls unpublished events
-3. Events are published to all configured publishers
-4. Ensures no events are lost even if the application crashes
+2. Every row gets a `bucket`, derived from the event `partitionKey` or from the row id
+3. A background worker sweeps the buckets one by one, starting at a rotating position
+4. A bucket is taken with a non blocking lock, buckets held by another worker are skipped
+5. Events of the batch are published to all configured publishers and deleted in the same transaction
+6. Ensures no events are lost even if the application crashes
+
+**Buckets:**
+
+`OutboxBuckets.COUNT` is a compile time constant, not a setting. It describes the rows already
+written to `outbox_events`: changing it re-maps every partition key, so events of one stream would
+sit in two buckets at once and could be published by two workers in parallel. The value used to
+initialize the database is kept in `outbox_settings`, and `OutboxPublisher.start()` throws
+`OutboxBucketCountMismatchException` when a build disagrees with it. Changing the count means
+draining the outbox, updating `outbox_settings.bucket_count` and only then rolling out the new build.
+
+`batchSize` is per bucket: a sweep publishes up to `batchSize * OutboxBuckets.COUNT` events and every
+bucket batch is one transaction that stays open while its events are published. Keep it small enough
+to keep those transactions short.
+
+**Several workers:**
+
+Buckets are locked with `pg_try_advisory_xact_lock`, taken inside the batch transaction and released
+with it, so a crashed worker never blocks its bucket. Advisory locks are a Postgres feature, other
+databases can plug their own implementation of `OutboxBucketLock` (or use `SingleWorkerBucketLock`
+when a single worker publishes the outbox):
+
+```kotlin
+OutboxPublisher(
+    database = database,
+    publishers = publishers,
+    bucketLock = PostgresAdvisoryBucketLock(namespace = 42),
+    metrics = InMemoryOutboxMetrics()
+)
+```
+
+**Metrics:**
+
+`OutboxMetrics` reports per bucket how many buckets the worker actually holds, the age of the oldest
+unpublished event, and how many events were published or failed. `LoggingOutboxMetrics` (the default)
+logs them, `InMemoryOutboxMetrics.snapshot()` exposes them to an application metrics registry.
+
+**Schema:**
+
+`event-exposed` ships `outbox_events_postgres_table.sql`, an existing database is migrated with:
+
+```sql
+ALTER TABLE outbox_events ADD COLUMN bucket integer;
+-- 16 is OutboxBuckets.COUNT
+UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), 16) WHERE bucket IS NULL;
+ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL;
+CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, created_at, id) WHERE published_at IS NULL;
+
+CREATE TABLE outbox_settings (
+    name text NOT NULL PRIMARY KEY,
+    value integer NOT NULL
+);
+```
+
+Backfilled rows are spread over the buckets by their id, the partition keys of the rows written by
+the new build are respected from the first insert.
 
 **Event Sourcing:**
 
