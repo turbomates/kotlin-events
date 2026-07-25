@@ -29,7 +29,7 @@ class OutboxInterceptorTest {
     fun `should intercept event`() {
         transaction(database) {
             Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
-                exec(String(readAllBytes()))
+                String(readAllBytes()).split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { exec(it) }
             }
         }
         transaction(database) {

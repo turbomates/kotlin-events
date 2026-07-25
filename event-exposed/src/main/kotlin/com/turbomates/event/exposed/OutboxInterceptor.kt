@@ -33,6 +33,7 @@ fun List<Event>.save(telemetryService: Telemetry) {
     EventsTable.batchInsert(events) { event ->
         this[EventsTable.id] = event.id
         this[EventsTable.event] = event.original
+        this[EventsTable.bucket] = event.bucket
         this[EventsTable.createdAt] = event.createdAt
         this[EventsTable.traceInformation] = event.traceInformation
     }

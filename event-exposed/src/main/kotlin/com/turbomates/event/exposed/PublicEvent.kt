@@ -18,5 +18,8 @@ data class PublicEvent(
 ) {
     @Serializable(with = LocalDateTimeSerializer::class)
     val createdAt = original.timestamp
+
+    /** Outbox bucket of the event, its partition key when it has one, its own id otherwise. */
+    val bucket: Int get() = OutboxBuckets.of(original.partitionKey, id)
 }
 
