@@ -61,7 +61,7 @@ class OutboxPublisherTest {
         val events = (1..TEST_BUCKET_COUNT * 4).map { PublicEvent(OutboxEvent(UUID.randomUUID())) }
         events.forEach { insert(it) }
         val publisher = CollectingPublisher()
-        val metrics = InMemoryOutboxMetrics()
+        val metrics = RecordingOutboxMetrics()
 
         val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()
         awaitUntil { unpublished() == 0L }
@@ -85,7 +85,7 @@ class OutboxPublisherTest {
         insert(locked)
         insert(free)
         val publisher = CollectingPublisher()
-        val metrics = InMemoryOutboxMetrics()
+        val metrics = RecordingOutboxMetrics()
 
         holdBucket(lockedBucket).use {
             val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()

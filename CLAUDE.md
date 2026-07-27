@@ -62,7 +62,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
 - `OutboxBuckets`: Bucket count of the process (set once) and `partitionKey ?: eventId` bucket derivation
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
-- `OutboxMetrics`: Per-bucket lag, batch size, owned buckets (`LoggingOutboxMetrics`, `InMemoryOutboxMetrics`)
+- `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, for the application registry (default `NoOpOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
 - `EventSourcingTable`: Complete event history by rootId for event sourcing

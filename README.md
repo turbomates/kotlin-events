@@ -199,16 +199,29 @@ OutboxPublisher(
     database = database,
     publishers = publishers,
     bucketCount = 16,
-    bucketLock = PostgresAdvisoryBucketLock(namespace = 42),
-    metrics = InMemoryOutboxMetrics()
+    bucketLock = PostgresAdvisoryBucketLock(namespace = 42)
 )
 ```
 
 **Metrics:**
 
 `OutboxMetrics` reports per bucket how many buckets the worker actually holds, the age of the oldest
-unpublished event, and how many events were published or failed. `LoggingOutboxMetrics` (the default)
-logs them, `InMemoryOutboxMetrics.snapshot()` exposes them to an application metrics registry.
+unpublished event, and how many events were published, skipped or failed. It is a seam for the
+application metrics registry, nothing more, the publisher logs its own errors on its own. The default
+is `NoOpOutboxMetrics`, every method of the interface has an empty default, so an implementation only
+overrides what it exports:
+
+```kotlin
+class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetrics {
+    override fun bucketAcquired(bucket: Int, pending: Int, lag: Duration) {
+        registry.gauge("outbox.lag.seconds", listOf(Tag.of("bucket", bucket.toString())), lag.inWholeSeconds)
+    }
+
+    override fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {
+        registry.gauge("outbox.buckets.owned", ownedBuckets)
+    }
+}
+```
 
 **Schema:**
 

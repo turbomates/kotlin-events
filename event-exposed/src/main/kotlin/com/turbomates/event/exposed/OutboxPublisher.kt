@@ -60,7 +60,7 @@ class OutboxPublisher(
     private val delay: Duration = Duration.parse("1s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val bucketLock: OutboxBucketLock = PostgresAdvisoryBucketLock(),
-    private val metrics: OutboxMetrics = LoggingOutboxMetrics()
+    private val metrics: OutboxMetrics = NoOpOutboxMetrics
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
     private var sweepStart: Int
