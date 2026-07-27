@@ -27,6 +27,7 @@ class OutboxInterceptorTest {
 
     @Test
     fun `should intercept event`() {
+        OutboxBuckets.configure(TEST_BUCKET_COUNT)
         transaction(database) {
             Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
                 String(readAllBytes()).split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { exec(it) }

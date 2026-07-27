@@ -10,7 +10,6 @@ import java.util.Collections
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlin.time.Duration
@@ -21,7 +20,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
-import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
@@ -34,9 +32,9 @@ import org.testcontainers.containers.PostgreSQLContainer
 class OutboxPublisherTest {
     @BeforeEach
     fun resetSchema() {
+        OutboxBuckets.configure(TEST_BUCKET_COUNT)
         transaction(database) {
             exec("DROP TABLE IF EXISTS outbox_events")
-            exec("DROP TABLE IF EXISTS outbox_settings")
         }
         transaction(database) {
             schema().forEach { exec(it) }
@@ -49,7 +47,7 @@ class OutboxPublisherTest {
         val event = PublicEvent(OutboxEvent(UUID.randomUUID()))
         insert(event)
 
-        val job = OutboxPublisher(database, listOf(publisher), delay = POLL_DELAY).start()
+        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
         awaitUntil { publisher.published.isNotEmpty() }
         job.cancelAndJoin()
 
@@ -60,18 +58,18 @@ class OutboxPublisherTest {
 
     @Test
     fun `publishes every bucket`() = runBlocking {
-        val events = (1..OutboxBuckets.COUNT * 4).map { PublicEvent(OutboxEvent(UUID.randomUUID())) }
+        val events = (1..TEST_BUCKET_COUNT * 4).map { PublicEvent(OutboxEvent(UUID.randomUUID())) }
         events.forEach { insert(it) }
         val publisher = CollectingPublisher()
         val metrics = InMemoryOutboxMetrics()
 
-        val job = OutboxPublisher(database, listOf(publisher), delay = POLL_DELAY, metrics = metrics).start()
+        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()
         awaitUntil { unpublished() == 0L }
         job.cancelAndJoin()
 
         assertEquals(events.size, publisher.published.size)
         val snapshot = metrics.snapshot()
-        assertEquals(OutboxBuckets.COUNT, snapshot.ownedBuckets)
+        assertEquals(TEST_BUCKET_COUNT, snapshot.ownedBuckets)
         assertEquals(events.size.toLong(), snapshot.publishedTotal)
         assertEquals(0L, snapshot.failedTotal)
         assertTrue(snapshot.maxLag > Duration.ZERO, "expected a non zero lag, got ${snapshot.maxLag}")
@@ -90,7 +88,7 @@ class OutboxPublisherTest {
         val metrics = InMemoryOutboxMetrics()
 
         holdBucket(lockedBucket).use {
-            val job = OutboxPublisher(database, listOf(publisher), delay = POLL_DELAY, metrics = metrics).start()
+            val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()
             awaitUntil { publisher.published.isNotEmpty() && metrics.snapshot().ownedBuckets > 0 }
             job.cancelAndJoin()
 
@@ -99,10 +97,10 @@ class OutboxPublisherTest {
             val snapshot = metrics.snapshot()
             assertFalse(lockedBucket in snapshot.acquiredBuckets)
             assertTrue((snapshot.skipped[lockedBucket] ?: 0) > 0)
-            assertEquals(OutboxBuckets.COUNT - 1, snapshot.ownedBuckets)
+            assertEquals(TEST_BUCKET_COUNT - 1, snapshot.ownedBuckets)
         }
 
-        val job = OutboxPublisher(database, listOf(publisher), delay = POLL_DELAY).start()
+        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
         awaitUntil { unpublished() == 0L }
         job.cancelAndJoin()
         assertEquals(2, publisher.published.size)
@@ -129,36 +127,6 @@ class OutboxPublisherTest {
         assertEquals(OutboxBuckets.of(unpartitioned.second), unpartitioned.third)
     }
 
-    @Test
-    fun `bucket count is stored on the first start`() = runBlocking {
-        val job = OutboxPublisher(database, emptyList(), delay = POLL_DELAY).start()
-        job.cancelAndJoin()
-
-        assertEquals(OutboxBuckets.COUNT, storedBucketCount())
-    }
-
-    @Test
-    fun `fails to start when the database was written with another bucket count`() {
-        transaction(database) {
-            exec("INSERT INTO outbox_settings (name, value) VALUES ('bucket_count', ${OutboxBuckets.COUNT + 1})")
-        }
-
-        val exception = assertFailsWith<OutboxBucketCountMismatchException> {
-            OutboxPublisher(database, emptyList()).start()
-        }
-        assertEquals(OutboxBuckets.COUNT + 1, exception.stored)
-        assertEquals(OutboxBuckets.COUNT, exception.expected)
-    }
-
-    @Test
-    fun `fails to start without the outbox settings table`() {
-        transaction(database) { exec("DROP TABLE outbox_settings") }
-
-        assertFailsWith<OutboxSettingsUnavailableException> {
-            OutboxPublisher(database, emptyList()).start()
-        }
-    }
-
     private fun insert(event: PublicEvent) {
         transaction(database) {
             EventsTable.insert {
@@ -172,13 +140,6 @@ class OutboxPublisherTest {
     }
 
     private fun unpublished(): Long = transaction(database) { EventsTable.selectAll().count() }
-
-    private fun storedBucketCount(): Int = transaction(database) {
-        OutboxSettingsTable
-            .selectAll()
-            .where { OutboxSettingsTable.settingName eq OutboxBuckets.BUCKET_COUNT_SETTING }
-            .single()[OutboxSettingsTable.settingValue]
-    }
 
     /** Keeps the advisory lock of a bucket for as long as the returned connection stays open. */
     private fun holdBucket(bucket: Int): Connection {

@@ -40,13 +40,17 @@ import org.slf4j.LoggerFactory
  * workers at the same time. A batch is published in insertion order, an event that fails to publish
  * is left in the table for the next sweep while the rest of the batch continues.
  *
+ * @param bucketCount buckets the outbox is written with. It describes the rows already in
+ * `outbox_events`, changing it for a non empty outbox re-maps every partition key, and every process
+ * of the application has to be given the same count.
  * @param batchSize events read per bucket, not per sweep: a sweep may publish up to
- * `batchSize * OutboxBuckets.COUNT` events, and every batch is one transaction that stays open while
- * its events are published.
+ * `batchSize * bucketCount` events, and every batch is one transaction that stays open while its
+ * events are published.
  */
 class OutboxPublisher(
     private val database: Database,
     private val publishers: List<Publisher>,
+    private val bucketCount: Int,
     private val batchSize: Int = DEFAULT_BATCH_SIZE,
     private val delay: Duration = Duration.parse("1s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -54,13 +58,14 @@ class OutboxPublisher(
     private val metrics: OutboxMetrics = LoggingOutboxMetrics()
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private var sweepStart = Random.nextInt(OutboxBuckets.COUNT)
+    private var sweepStart: Int
 
-    /**
-     * @throws OutboxBucketCountMismatchException when the database was written with another bucket count.
-     */
+    init {
+        OutboxBuckets.configure(bucketCount)
+        sweepStart = Random.nextInt(bucketCount)
+    }
+
     fun start(): Job {
-        OutboxBuckets.verify(database)
         return launch {
             while (isActive) {
                 try {
@@ -76,10 +81,10 @@ class OutboxPublisher(
 
     private suspend fun sweep() {
         val start = sweepStart
-        sweepStart = (start + 1) % OutboxBuckets.COUNT
+        sweepStart = (start + 1) % bucketCount
         var owned = 0
-        for (offset in 0 until OutboxBuckets.COUNT) {
-            val bucket = (start + offset) % OutboxBuckets.COUNT
+        for (offset in 0 until bucketCount) {
+            val bucket = (start + offset) % bucketCount
             try {
                 if (publish(bucket)) {
                     owned++
@@ -89,7 +94,7 @@ class OutboxPublisher(
                 logger.error("error while publishing events of bucket $bucket", ignore)
             }
         }
-        metrics.sweepCompleted(owned, OutboxBuckets.COUNT)
+        metrics.sweepCompleted(owned, bucketCount)
     }
 
     /** @return true when this worker owned the bucket, false when it is held by another one. */
@@ -147,7 +152,7 @@ class OutboxPublisher(
     }
 
     companion object {
-        /** Per bucket, a sweep publishes up to this many events times [OutboxBuckets.COUNT]. */
+        /** Per bucket, a sweep publishes up to this many events times the bucket count. */
         const val DEFAULT_BATCH_SIZE: Int = 100
     }
 }

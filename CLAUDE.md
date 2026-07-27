@@ -60,12 +60,11 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore`
 - `OutboxPublisher`: Background worker that sweeps the buckets of `outbox_events` and publishes events
 - `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
-- `OutboxBuckets`: Bucket count (compile time constant) and `partitionKey ?: eventId` bucket derivation
+- `OutboxBuckets`: Bucket count of the process (set once) and `partitionKey ?: eventId` bucket derivation
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets (`LoggingOutboxMetrics`, `InMemoryOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
-- `OutboxSettingsTable`: Bucket count the table was initialized with, checked on startup
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
 **Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine sweeps buckets, locks one bucket at a time and delegates its batch to a chain of Publishers.
@@ -99,10 +98,11 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 6. Removes the published row inside the same transaction
 
 ### Outbox Buckets
-`OutboxBuckets.COUNT` describes the data already written, not a deployment: changing it re-maps every
-partition key. It is a compile time constant, mirrored in `outbox_settings.bucket_count`, and
-`OutboxPublisher.start()` throws `OutboxBucketCountMismatchException` when the two disagree.
-`batchSize` is per bucket, a sweep may publish `batchSize * OutboxBuckets.COUNT` events.
+`OutboxPublisher(bucketCount = ...)` is required and has no default: it describes the data already
+written, not a deployment, changing it re-maps every partition key. Building the publisher configures
+`OutboxBuckets` for the whole process (a writer only process calls `OutboxBuckets.configure()` itself),
+and a second, different count throws `OutboxBucketCountMismatchException`.
+`batchSize` is per bucket, a sweep may publish `batchSize * bucketCount` events.
 
 ### Event Definition
 ```kotlin
@@ -136,7 +136,7 @@ val publishers = listOf(
     LocalPublisher(registry),  // In-process subscribers
     RabbitPublisher(config)    // Distributed messaging
 )
-val outboxPublisher = OutboxPublisher(database, publishers)
+val outboxPublisher = OutboxPublisher(database, publishers, bucketCount = 16)
 ```
 
 ## Testing

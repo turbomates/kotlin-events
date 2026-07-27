@@ -75,6 +75,9 @@ class InMemoryOutboxMetrics : OutboxMetrics {
     @Volatile
     private var ownedBuckets: Int = 0
 
+    @Volatile
+    private var totalBuckets: Int = 0
+
     override fun bucketAcquired(bucket: Int, pending: Int, lag: Duration) {
         acquired.add(bucket)
         this.pending[bucket] = pending
@@ -96,11 +99,12 @@ class InMemoryOutboxMetrics : OutboxMetrics {
 
     override fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {
         this.ownedBuckets = ownedBuckets
+        this.totalBuckets = totalBuckets
     }
 
     fun snapshot(): Snapshot = Snapshot(
         ownedBuckets = ownedBuckets,
-        totalBuckets = OutboxBuckets.COUNT,
+        totalBuckets = totalBuckets,
         acquiredBuckets = acquired.toSet(),
         lag = lags.toMap(),
         pending = pending.toMap(),

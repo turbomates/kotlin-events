@@ -150,6 +150,7 @@ val publishers = listOf(
 val outboxPublisher = OutboxPublisher(
     database = database,
     publishers = publishers,
+    bucketCount = 16,                    // required, must match the rows already in the table
     batchSize = 100,                     // events per bucket, not per sweep
     delay = Duration.parse("1s")         // pause between sweeps
 )
@@ -168,16 +169,20 @@ outboxPublisher.start()
 
 **Buckets:**
 
-`OutboxBuckets.COUNT` is a compile time constant, not a setting. It describes the rows already
-written to `outbox_events`: changing it re-maps every partition key, so events of one stream would
-sit in two buckets at once and could be published by two workers in parallel. The value used to
-initialize the database is kept in `outbox_settings`, and `OutboxPublisher.start()` throws
-`OutboxBucketCountMismatchException` when a build disagrees with it. Changing the count means
-draining the outbox, updating `outbox_settings.bucket_count` and only then rolling out the new build.
+`bucketCount` is required and has no default. It describes the rows already written to
+`outbox_events`, not a deployment: changing it re-maps every partition key, so events of one stream
+would sit in two buckets at once and could be published by two workers in parallel. Pick it once, keep
+it in code next to the other constants of the application, and change it only by draining the outbox
+first. Every process has to use the same value, `OutboxBuckets.configure()` throws
+`OutboxBucketCountMismatchException` when one process tries to write with a second count.
 
-`batchSize` is per bucket: a sweep publishes up to `batchSize * OutboxBuckets.COUNT` events and every
-bucket batch is one transaction that stays open while its events are published. Keep it small enough
-to keep those transactions short.
+Building an `OutboxPublisher` configures the count for the whole process. A process that writes events
+without publishing them calls `OutboxBuckets.configure(16)` itself at startup, before the first event
+is written.
+
+`batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events and every bucket
+batch is one transaction that stays open while its events are published. Keep it small enough to keep
+those transactions short.
 
 **Several workers:**
 
@@ -190,6 +195,7 @@ when a single worker publishes the outbox):
 OutboxPublisher(
     database = database,
     publishers = publishers,
+    bucketCount = 16,
     bucketLock = PostgresAdvisoryBucketLock(namespace = 42),
     metrics = InMemoryOutboxMetrics()
 )
@@ -207,15 +213,10 @@ logs them, `InMemoryOutboxMetrics.snapshot()` exposes them to an application met
 
 ```sql
 ALTER TABLE outbox_events ADD COLUMN bucket integer;
--- 16 is OutboxBuckets.COUNT
+-- 16 is the bucketCount the application is built with
 UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), 16) WHERE bucket IS NULL;
 ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL;
 CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, created_at, id) WHERE published_at IS NULL;
-
-CREATE TABLE outbox_settings (
-    name text NOT NULL PRIMARY KEY,
-    value integer NOT NULL
-);
 ```
 
 Backfilled rows are spread over the buckets by their id, the partition keys of the rows written by
@@ -357,7 +358,7 @@ fun main() = runBlocking {
 
     // Outbox
     GlobalStatementInterceptor.register(OutboxInterceptor())
-    val outboxPublisher = OutboxPublisher(database, publishers)
+    val outboxPublisher = OutboxPublisher(database, publishers, bucketCount = 16)
     outboxPublisher.start()
 
     // Consumer
