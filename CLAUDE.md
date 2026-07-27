@@ -67,7 +67,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
-**Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine sweeps buckets, locks one bucket at a time and delegates its batch to a chain of Publishers.
+**Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine sweeps buckets, locks one bucket at a time and delegates its events, one transaction each, to a chain of Publishers.
 
 ### event-rabbit (RabbitMQ Integration)
 Provides RabbitMQ distribution with retry/dead-letter queue handling.
@@ -92,10 +92,12 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically, each row
    carrying the bucket of `partitionKey ?: eventId`
 3. `OutboxPublisher` sweeps the buckets in a background coroutine, starting at a rotating position
-4. Each bucket batch runs in its own transaction guarded by a non blocking advisory lock, buckets held
-   by another worker are skipped
-5. For each event, calls all publishers in chain (LocalPublisher, RabbitPublisher, etc.)
-6. Removes the published row inside the same transaction
+4. Every transaction takes a non blocking advisory lock on the bucket, buckets held by another worker
+   are skipped
+5. Each event is published in its own transaction: the row is deleted first, then all publishers in
+   chain are called (LocalPublisher, RabbitPublisher, etc.), then the transaction commits
+6. A publisher that throws rolls the deletion back, so the event is retried on the next sweep and the
+   rest of the batch is unaffected
 
 ### Outbox Buckets
 `OutboxPublisher(bucketCount = ...)` is required and has no default: it describes the data already

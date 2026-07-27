@@ -107,6 +107,25 @@ class OutboxPublisherTest {
     }
 
     @Test
+    fun `a failing event does not republish the rest of its batch`() = runBlocking {
+        val partitionKey = UUID.randomUUID()
+        val events = (1..5).map { PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey)) }
+        events.forEach { insert(it) }
+        val failing = (events[2].original as PartitionedOutboxEvent).id
+        val publisher = FailingPublisher(failing)
+
+        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
+        awaitUntil { unpublished() == 1L && publisher.attempts.count { it == failing } > 2 }
+        job.cancelAndJoin()
+
+        val delivered = publisher.published
+        assertEquals(4, delivered.size, "every event but the failing one is published exactly once")
+        assertEquals(delivered.toSet().size, delivered.size)
+        assertFalse(failing in delivered)
+        assertEquals(1L, unpublished())
+    }
+
+    @Test
     fun `events of one partition key are written to one bucket`() {
         val partitionKey = UUID.randomUUID()
         transaction(database) {
@@ -170,6 +189,19 @@ class OutboxPublisherTest {
         val published: MutableList<OutboxEvent> = Collections.synchronizedList(mutableListOf())
         override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
             published.add(event as OutboxEvent)
+        }
+    }
+
+    /** Fails every time it is given [failing], collects everything else. */
+    class FailingPublisher(private val failing: UUID) : Publisher {
+        val attempts: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
+        val published: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
+
+        override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
+            val id = (event as PartitionedOutboxEvent).id
+            attempts.add(id)
+            check(id != failing) { "event $id can not be published" }
+            published.add(id)
         }
     }
 

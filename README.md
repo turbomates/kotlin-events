@@ -164,7 +164,8 @@ outboxPublisher.start()
 2. Every row gets a `bucket`, derived from the event `partitionKey` or from the row id
 3. A background worker sweeps the buckets one by one, starting at a rotating position
 4. A bucket is taken with a non blocking lock, buckets held by another worker are skipped
-5. Events of the batch are published to all configured publishers and deleted in the same transaction
+5. Every event is published in its own transaction, which deletes the row first and commits after the
+   publishers are done, so a failure costs one redelivery and never the whole batch
 6. Ensures no events are lost even if the application crashes
 
 **Buckets:**
@@ -180,14 +181,14 @@ Building an `OutboxPublisher` configures the count for the whole process. A proc
 without publishing them calls `OutboxBuckets.configure(16)` itself at startup, before the first event
 is written.
 
-`batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events and every bucket
-batch is one transaction that stays open while its events are published. Keep it small enough to keep
-those transactions short.
+`batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events. It only bounds
+how much one worker takes from a bucket per sweep, the transaction stays one event wide.
 
 **Several workers:**
 
-Buckets are locked with `pg_try_advisory_xact_lock`, taken inside the batch transaction and released
-with it, so a crashed worker never blocks its bucket. Advisory locks are a Postgres feature, other
+Buckets are locked with `pg_try_advisory_xact_lock`, taken inside every transaction and released with
+it, so a crashed worker never blocks its bucket. A worker that finds its bucket taken over mid batch
+leaves the rest to the worker that holds it. Advisory locks are a Postgres feature, other
 databases can plug their own implementation of `OutboxBucketLock` (or use `SingleWorkerBucketLock`
 when a single worker publishes the outbox):
 
