@@ -26,6 +26,7 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.inTopLevelSuspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.json.jsonb
 import org.slf4j.LoggerFactory
@@ -34,14 +35,16 @@ import org.slf4j.LoggerFactory
  * Publishes the outbox in buckets instead of scanning the whole table.
  *
  * A sweep walks every bucket once, starting at a rotating position so workers that poll in lockstep
- * do not keep fighting over the same bucket. Every transaction takes the bucket with a non blocking
- * lock and releases it on commit, buckets held by another worker are skipped. Events of one partition
- * key always share a bucket, so they are never published by two workers at the same time.
+ * do not keep fighting over the same bucket. A bucket is taken with a non blocking lock and held for
+ * the whole batch, buckets held by another worker are skipped. Events of one partition key always
+ * share a bucket, so they are never published by two workers at the same time.
  *
- * An event is published in its own transaction, which deletes the row first and commits after the
- * publishers are done: a batch is not a unit of work, so a failure on the hundredth event costs one
- * redelivery, not ninety nine. A failed event stays in the table for the next sweep while the rest of
- * the batch continues, out of order with its partition.
+ * The transaction that holds the lock does nothing but hold it, every event is published in a
+ * transaction of its own which deletes the row first and commits after the publishers are done: a
+ * batch is not a unit of work, so a failure on the hundredth event costs one redelivery, not ninety
+ * nine. A failed event stays in the table for the next sweep while the rest of the batch continues,
+ * out of order with its partition. A worker therefore uses two connections while it publishes a
+ * bucket, the pool has to have room for them.
  *
  * @param bucketCount buckets the outbox is written with. It describes the rows already in
  * `outbox_events`, changing it for a non empty outbox re-maps every partition key, and every process
@@ -99,64 +102,57 @@ class OutboxPublisher(
         metrics.sweepCompleted(owned, bucketCount)
     }
 
-    /** @return true when this worker owned the bucket, false when it is held by another one. */
-    private suspend fun publish(bucket: Int): Boolean {
-        val batch = claim(bucket)
-        if (batch == null) {
+    /**
+     * Holds the bucket for the whole batch: this transaction takes the lock, reads the batch and then
+     * only waits, the events are published in transactions of their own, so nothing that happens to
+     * one of them can undo the others. The lock lives until this transaction ends.
+     *
+     * @return true when this worker owned the bucket, false when it is held by another one.
+     */
+    private suspend fun publish(bucket: Int): Boolean = suspendTransaction(database) {
+        if (!bucketLock.tryLock(this, bucket)) {
             metrics.bucketSkipped(bucket)
-            return false
+            return@suspendTransaction false
         }
+        val batch = load(bucket, batchSize)
         metrics.bucketAcquired(bucket, batch.events.size, batch.lag())
         var published = 0
         var failed = 0
         for (event in batch.events) {
-            val result = try {
-                publish(bucket, event)
+            try {
+                if (publish(event)) {
+                    published++
+                }
             } catch (ignore: Throwable) {
                 failed++
                 logger.error("error while publishing event ${event.id}", ignore)
-                Published.FAILED
-            }
-            if (result == Published.BUCKET_TAKEN) {
-                metrics.bucketSkipped(bucket)
-                break
-            }
-            if (result == Published.DONE) {
-                published++
             }
         }
         metrics.bucketPublished(bucket, published, failed)
-        return true
-    }
-
-    /** Locks the bucket and reads its batch. @return null when another worker holds the bucket. */
-    private suspend fun claim(bucket: Int): OutboxBatch? = suspendTransaction(database) {
-        if (bucketLock.tryLock(this, bucket)) load(bucket, batchSize) else null
+        true
     }
 
     /**
-     * Deletes the row and publishes it in the same transaction: the publishers run against a row that
-     * no other worker can take, and a publisher that throws rolls the deletion back, leaving the event
-     * for the next sweep.
+     * Publishes one event in a transaction of its own, which deletes the row before the publishers
+     * run: a publisher that throws rolls that deletion back and leaves the event for the next sweep,
+     * and the row lock keeps a worker that lost the bucket from publishing the same event twice.
+     *
+     * @return false when the row is already gone.
      */
-    private suspend fun publish(bucket: Int, event: PublicEvent): Published = suspendTransaction(database) {
-        if (!bucketLock.tryLock(this, bucket)) {
-            return@suspendTransaction Published.BUCKET_TAKEN
+    private suspend fun publish(event: PublicEvent): Boolean =
+        inTopLevelSuspendTransaction(database, null, null, null) {
+            if (EventsTable.deleteWhere { EventsTable.id eq event.id } == 0) {
+                return@inTopLevelSuspendTransaction false
+            }
+            publishers.forEach { publisher ->
+                logger.debug(
+                    "event " + event.id.toString() +
+                        " was published by ${publisher.javaClass.name} in worker"
+                )
+                publisher.publish(event.original, event.traceInformation)
+            }
+            true
         }
-        if (EventsTable.deleteWhere { EventsTable.id eq event.id } == 0) {
-            return@suspendTransaction Published.GONE
-        }
-        publishers.forEach { publisher ->
-            logger.debug(
-                "event " + event.id.toString() +
-                    " was published by ${publisher.javaClass.name} in worker"
-            )
-            publisher.publish(event.original, event.traceInformation)
-        }
-        Published.DONE
-    }
-
-    private enum class Published { DONE, FAILED, GONE, BUCKET_TAKEN }
 
     private fun JdbcTransaction.load(bucket: Int, limit: Int): OutboxBatch {
         val rows = EventsTable

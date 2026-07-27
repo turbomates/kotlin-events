@@ -92,10 +92,11 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically, each row
    carrying the bucket of `partitionKey ?: eventId`
 3. `OutboxPublisher` sweeps the buckets in a background coroutine, starting at a rotating position
-4. Every transaction takes a non blocking advisory lock on the bucket, buckets held by another worker
-   are skipped
-5. Each event is published in its own transaction: the row is deleted first, then all publishers in
-   chain are called (LocalPublisher, RabbitPublisher, etc.), then the transaction commits
+4. A transaction takes a non blocking advisory lock on the bucket and holds it for the whole batch,
+   buckets held by another worker are skipped
+5. Each event is published in a transaction of its own (`inTopLevelSuspendTransaction`, its own
+   connection): the row is deleted first, then all publishers in chain are called (LocalPublisher,
+   RabbitPublisher, etc.), then the transaction commits
 6. A publisher that throws rolls the deletion back, so the event is retried on the next sweep and the
    rest of the batch is unaffected
 

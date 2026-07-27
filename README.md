@@ -163,7 +163,8 @@ outboxPublisher.start()
 1. Events are persisted to the database in the same transaction as your business data
 2. Every row gets a `bucket`, derived from the event `partitionKey` or from the row id
 3. A background worker sweeps the buckets one by one, starting at a rotating position
-4. A bucket is taken with a non blocking lock, buckets held by another worker are skipped
+4. A bucket is taken with a non blocking lock and held for the whole batch, buckets held by another
+   worker are skipped
 5. Every event is published in its own transaction, which deletes the row first and commits after the
    publishers are done, so a failure costs one redelivery and never the whole batch
 6. Ensures no events are lost even if the application crashes
@@ -182,13 +183,14 @@ without publishing them calls `OutboxBuckets.configure(16)` itself at startup, b
 is written.
 
 `batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events. It only bounds
-how much one worker takes from a bucket per sweep, the transaction stays one event wide.
+how much one worker takes from a bucket per sweep, the publishing transaction stays one event wide.
 
 **Several workers:**
 
-Buckets are locked with `pg_try_advisory_xact_lock`, taken inside every transaction and released with
-it, so a crashed worker never blocks its bucket. A worker that finds its bucket taken over mid batch
-leaves the rest to the worker that holds it. Advisory locks are a Postgres feature, other
+Buckets are locked with `pg_try_advisory_xact_lock`. The lock is taken by a transaction that does
+nothing but hold it for the batch, and the database releases it when that transaction ends, so a
+crashed worker never blocks its bucket. The events themselves are published in transactions of their
+own, which means a worker holds two connections while it works on a bucket, plan the pool for it. Advisory locks are a Postgres feature, other
 databases can plug their own implementation of `OutboxBucketLock` (or use `SingleWorkerBucketLock`
 when a single worker publishes the outbox):
 
