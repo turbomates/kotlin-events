@@ -57,14 +57,14 @@ Foundation module providing core event-driven abstractions. All other modules de
 Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 
 **Key components:**
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore`
+- `Outbox`: Bucket count, serialization and table instances, built by the application and shared by the interceptor and the publisher
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore`, registered with `Outbox.install()`
 - `OutboxPublisher`: Background worker that sweeps the buckets of `outbox_events` and publishes events
 - `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
-- `OutboxBuckets`: Bucket count of the process (set once) and `partitionKey ?: eventId` bucket derivation
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, for the application registry (default `NoOpOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
-- `EventSerialization`: Process wide `Json` and `KSerializer<Event>` of the jsonb columns, `configure()` at startup
+- `EventSerialization`: `Json` and `KSerializer<Event>` of the jsonb columns, carried by the `Outbox`
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
@@ -102,10 +102,9 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
    rest of the batch is unaffected
 
 ### Outbox Buckets
-`OutboxPublisher(bucketCount = ...)` is required and has no default: it describes the data already
-written, not a deployment, changing it re-maps every partition key. Building the publisher configures
-`OutboxBuckets` for the whole process (a writer only process calls `OutboxBuckets.configure()` itself),
-and a second, different count throws `OutboxBucketCountMismatchException`.
+`Outbox(bucketCount = ...)` is required and has no default: it describes the data already written, not
+a deployment, changing it re-maps every partition key. One `Outbox` instance is built at startup and
+handed to both `install()` and `OutboxPublisher`, there is no process wide state behind it.
 `batchSize` is per bucket, a sweep may publish `batchSize * bucketCount` events.
 
 ### Event Definition
@@ -140,7 +139,7 @@ val publishers = listOf(
     LocalPublisher(registry),  // In-process subscribers
     RabbitPublisher(config)    // Distributed messaging
 )
-val outboxPublisher = OutboxPublisher(database, publishers, bucketCount = 16)
+val outboxPublisher = OutboxPublisher(database, publishers, Outbox(bucketCount = 16).also { it.install() })
 ```
 
 ## Testing

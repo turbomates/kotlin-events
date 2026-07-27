@@ -138,8 +138,9 @@ val database = Database.connect(
     password = "password"
 )
 
-// Register global interceptor
-GlobalStatementInterceptor.register(OutboxInterceptor())
+// Describe the outbox and register its interceptor for every transaction
+val outbox = Outbox(bucketCount = 16)
+outbox.install()
 
 // Start outbox publisher
 val publishers = listOf(
@@ -150,7 +151,7 @@ val publishers = listOf(
 val outboxPublisher = OutboxPublisher(
     database = database,
     publishers = publishers,
-    bucketCount = 16,                    // required, must match the rows already in the table
+    outbox = outbox,
     batchSize = 100,                     // events per bucket, not per sweep
     delay = Duration.parse("1s")         // pause between sweeps
 )
@@ -171,16 +172,12 @@ outboxPublisher.start()
 
 **Buckets:**
 
-`bucketCount` is required and has no default. It describes the rows already written to
+`Outbox(bucketCount)` is required and has no default. It describes the rows already written to
 `outbox_events`, not a deployment: changing it re-maps every partition key, so events of one stream
 would sit in two buckets at once and could be published by two workers in parallel. Pick it once, keep
 it in code next to the other constants of the application, and change it only by draining the outbox
-first. Every process has to use the same value, `OutboxBuckets.configure()` throws
-`OutboxBucketCountMismatchException` when one process tries to write with a second count.
-
-Building an `OutboxPublisher` configures the count for the whole process. A process that writes events
-without publishing them calls `OutboxBuckets.configure(16)` itself at startup, before the first event
-is written.
+first. Every process of the application builds its `Outbox` with the same count, and the one instance
+is handed to both `install()` and the publisher.
 
 `batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events. It only bounds
 how much one worker takes from a bucket per sweep, the publishing transaction stays one event wide.
@@ -225,21 +222,26 @@ class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetri
 
 **Custom serialization:**
 
-The `jsonb` columns of `outbox_events` and `event_sourcing` bind their format when the tables are
-first touched, so configure it at startup, before the first event is written or published. Build the
-`Json` on top of `EventSerialization.DEFAULT` to keep the flags the rows were written with:
+The format of the `jsonb` columns comes with the outbox, build the `Json` on top of
+`EventSerialization.DEFAULT_JSON` to add a serializers module of your own, for example contextual
+serializers of the value types the events carry, and keep the flags the existing rows were written
+with:
 
 ```kotlin
-EventSerialization.configure(
-    Json(from = EventSerialization.DEFAULT) { serializersModule = domainSerializers }
+val outbox = Outbox(
+    bucketCount = 16,
+    serialization = EventSerialization(
+        Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domainSerializers }
+    )
 )
+
+val storage = EventSourcingStorage(database, outbox.serialization)
 ```
 
-`configure` also takes the `KSerializer<Event>` that decides what a row looks like, by default
-`EventSerializer` and its `{"type": <class>, "body": {...}}`. A table that already holds rows can only
-be read back by a serializer that understands them, so replacing it is a migration, not a setting. A
-call that comes after the columns bound their format throws `EventSerializationInUseException` instead
-of being silently ignored.
+The second parameter of `EventSerialization` is the `KSerializer<Event>` that decides what a row looks
+like, by default `EventSerializer` and its `{"type": <class>, "body": {...}}`. A table that already
+holds rows can only be read back by a serializer that understands them, so replacing it is a
+migration, not a setting.
 
 **Schema:**
 
@@ -391,8 +393,9 @@ fun main() = runBlocking {
     )
 
     // Outbox
-    GlobalStatementInterceptor.register(OutboxInterceptor())
-    val outboxPublisher = OutboxPublisher(database, publishers, bucketCount = 16)
+    val outbox = Outbox(bucketCount = 16)
+    outbox.install()
+    val outboxPublisher = OutboxPublisher(database, publishers, outbox)
     outboxPublisher.start()
 
     // Consumer

@@ -3,15 +3,19 @@ package com.turbomates.event.exposed
 import com.turbomates.event.Event
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import org.junit.jupiter.api.BeforeEach
-import org.testcontainers.containers.PostgreSQLContainer
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
+import org.testcontainers.containers.PostgreSQLContainer
 
 class OutboxInterceptorTest {
     private lateinit var database: Database
+    private val outbox = Outbox(TEST_BUCKET_COUNT)
+    private lateinit var interceptor: OutboxInterceptor
 
     @BeforeEach
     fun setUp() {
@@ -23,11 +27,16 @@ class OutboxInterceptorTest {
             user = "test",
             password = "test"
         )
+        interceptor = outbox.install()
+    }
+
+    @AfterEach
+    fun tearDown() {
+        JdbcTransaction.globalInterceptors.remove(interceptor)
     }
 
     @Test
     fun `should intercept event`() {
-        OutboxBuckets.configure(TEST_BUCKET_COUNT)
         transaction(database) {
             Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
                 String(readAllBytes()).split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { exec(it) }
@@ -37,9 +46,10 @@ class OutboxInterceptorTest {
             events.addEvent(TestEvent())
         }
         transaction(database) {
-            assertEquals(1, EventsTable.selectAll().count())
+            assertEquals(1, outbox.events.selectAll().count())
         }
     }
+
     @Serializable
     private class TestEvent : Event() {
         override val key get() = TestEvent
@@ -47,4 +57,3 @@ class OutboxInterceptorTest {
         companion object : Key<TestEvent>
     }
 }
-

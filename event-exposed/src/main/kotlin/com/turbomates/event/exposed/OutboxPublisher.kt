@@ -1,7 +1,6 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Publisher
-import com.turbomates.event.TraceInformation
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import kotlin.random.Random
@@ -16,17 +15,14 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
-import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.isNull
-import org.jetbrains.exposed.v1.javatime.datetime
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.inTopLevelSuspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
-import org.jetbrains.exposed.v1.json.jsonb
 import org.slf4j.LoggerFactory
 
 /**
@@ -44,16 +40,15 @@ import org.slf4j.LoggerFactory
  * out of order with its partition. A worker therefore uses two connections while it publishes a
  * bucket, the pool has to have room for them.
  *
- * @param bucketCount buckets the outbox is written with. It describes the rows already in
- * `outbox_events`, changing it for a non empty outbox re-maps every partition key, and every process
- * of the application has to be given the same count.
+ * @param outbox the same outbox the interceptor of this application writes to, it carries the bucket
+ * count and the serialization of the rows.
  * @param batchSize events read per bucket, not per sweep: a sweep may publish up to
  * `batchSize * bucketCount` events.
  */
 class OutboxPublisher(
     private val database: Database,
     private val publishers: List<Publisher>,
-    private val bucketCount: Int,
+    private val outbox: Outbox,
     private val batchSize: Int = DEFAULT_BATCH_SIZE,
     private val delay: Duration = Duration.parse("1s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -61,12 +56,9 @@ class OutboxPublisher(
     private val metrics: OutboxMetrics = NoOpOutboxMetrics
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
-    private var sweepStart: Int
-
-    init {
-        OutboxBuckets.configure(bucketCount)
-        sweepStart = Random.nextInt(bucketCount)
-    }
+    private val table = outbox.events
+    private val bucketCount = outbox.bucketCount
+    private var sweepStart = Random.nextInt(outbox.bucketCount)
 
     fun start(): Job {
         return launch {
@@ -139,7 +131,7 @@ class OutboxPublisher(
      */
     private suspend fun publish(event: PublicEvent): Boolean =
         inTopLevelSuspendTransaction(database, null, null, null) {
-            if (EventsTable.deleteWhere { EventsTable.id eq event.id } == 0) {
+            if (table.deleteWhere { table.id eq event.id } == 0) {
                 return@inTopLevelSuspendTransaction false
             }
             publishers.forEach { publisher ->
@@ -153,17 +145,15 @@ class OutboxPublisher(
         }
 
     private fun JdbcTransaction.load(bucket: Int, limit: Int): OutboxBatch {
-        val rows = EventsTable
+        val rows = table
             .selectAll()
-            .where { (EventsTable.bucket eq bucket) and EventsTable.publishedAt.isNull() }
-            .orderBy(EventsTable.createdAt to SortOrder.ASC, EventsTable.id to SortOrder.ASC)
+            .where { (table.bucket eq bucket) and table.publishedAt.isNull() }
+            .orderBy(table.createdAt to SortOrder.ASC, table.id to SortOrder.ASC)
             .limit(limit)
             .toList()
         return OutboxBatch(
-            events = rows.map {
-                PublicEvent(it[EventsTable.event], it[EventsTable.id].value, it[EventsTable.traceInformation])
-            },
-            oldestCreatedAt = rows.firstOrNull()?.get(EventsTable.createdAt)
+            events = rows.map { PublicEvent(it[table.event], it[table.id].value, it[table.traceInformation]) },
+            oldestCreatedAt = rows.firstOrNull()?.get(table.createdAt)
         )
     }
 
@@ -180,13 +170,4 @@ class OutboxPublisher(
         /** Per bucket, a sweep publishes up to this many events times the bucket count. */
         const val DEFAULT_BATCH_SIZE: Int = 100
     }
-}
-
-internal object EventsTable : UUIDTable("outbox_events") {
-    val event = jsonb("event", EventSerialization.json(), EventSerialization.serializer())
-    val bucket = integer("bucket")
-    val traceInformation =
-        jsonb("trace_information", EventSerialization.DEFAULT, TraceInformation.serializer()).nullable()
-    val publishedAt = datetime("published_at").nullable()
-    val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

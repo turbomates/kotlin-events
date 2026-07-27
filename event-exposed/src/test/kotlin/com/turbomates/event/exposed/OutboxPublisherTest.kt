@@ -24,15 +24,20 @@ import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
+import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 
 class OutboxPublisherTest {
+    private val outbox = Outbox(TEST_BUCKET_COUNT)
+    private lateinit var interceptor: OutboxInterceptor
+
     @BeforeEach
     fun resetSchema() {
-        OutboxBuckets.configure(TEST_BUCKET_COUNT)
+        interceptor = outbox.install()
         transaction(database) {
             exec("DROP TABLE IF EXISTS outbox_events")
         }
@@ -41,13 +46,18 @@ class OutboxPublisherTest {
         }
     }
 
+    @AfterEach
+    fun removeInterceptor() {
+        JdbcTransaction.globalInterceptors.remove(interceptor)
+    }
+
     @Test
     fun `successfully publishing`() = runBlocking {
         val publisher = CollectingPublisher()
         val event = PublicEvent(OutboxEvent(UUID.randomUUID()))
         insert(event)
 
-        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
         awaitUntil { publisher.published.isNotEmpty() }
         job.cancelAndJoin()
 
@@ -63,7 +73,7 @@ class OutboxPublisherTest {
         val publisher = CollectingPublisher()
         val metrics = RecordingOutboxMetrics()
 
-        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY, metrics = metrics).start()
         awaitUntil { unpublished() == 0L }
         job.cancelAndJoin()
 
@@ -73,22 +83,22 @@ class OutboxPublisherTest {
         assertEquals(events.size.toLong(), snapshot.publishedTotal)
         assertEquals(0L, snapshot.failedTotal)
         assertTrue(snapshot.maxLag > Duration.ZERO, "expected a non zero lag, got ${snapshot.maxLag}")
-        assertTrue(snapshot.acquiredBuckets.containsAll(events.map { it.bucket }))
+        assertTrue(snapshot.acquiredBuckets.containsAll(events.map { outbox.bucket(it.original.partitionKey, it.id) }))
     }
 
     @Test
     fun `bucket held by another worker is skipped`() = runBlocking {
         val locked = PublicEvent(OutboxEvent(UUID.randomUUID()))
-        val lockedBucket = locked.bucket
+        val lockedBucket = outbox.bucket(locked.original.partitionKey, locked.id)
         val free = generateSequence { PublicEvent(OutboxEvent(UUID.randomUUID())) }
-            .first { it.bucket != lockedBucket }
+            .first { outbox.bucket(it.original.partitionKey, it.id) != lockedBucket }
         insert(locked)
         insert(free)
         val publisher = CollectingPublisher()
         val metrics = RecordingOutboxMetrics()
 
         holdBucket(lockedBucket).use {
-            val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY, metrics = metrics).start()
+            val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY, metrics = metrics).start()
             awaitUntil { publisher.published.isNotEmpty() && metrics.snapshot().ownedBuckets > 0 }
             job.cancelAndJoin()
 
@@ -100,7 +110,7 @@ class OutboxPublisherTest {
             assertEquals(TEST_BUCKET_COUNT - 1, snapshot.ownedBuckets)
         }
 
-        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
         awaitUntil { unpublished() == 0L }
         job.cancelAndJoin()
         assertEquals(2, publisher.published.size)
@@ -114,7 +124,7 @@ class OutboxPublisherTest {
         val failing = (events[2].original as PartitionedOutboxEvent).id
         val publisher = FailingPublisher(failing)
 
-        val job = OutboxPublisher(database, listOf(publisher), TEST_BUCKET_COUNT, delay = POLL_DELAY).start()
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
         awaitUntil { unpublished() == 1L && publisher.attempts.count { it == failing } > 2 }
         job.cancelAndJoin()
 
@@ -135,30 +145,30 @@ class OutboxPublisherTest {
         }
 
         val rows = transaction(database) {
-            EventsTable.selectAll().map { Triple(it[EventsTable.event], it[EventsTable.id].value, it[EventsTable.bucket]) }
+            outbox.events.selectAll().map { Triple(it[outbox.events.event], it[outbox.events.id].value, it[outbox.events.bucket]) }
         }
 
         assertEquals(3, rows.size)
         val partitioned = rows.filter { it.first is PartitionedOutboxEvent }
         assertEquals(2, partitioned.size)
-        assertEquals(setOf(OutboxBuckets.of(partitionKey)), partitioned.map { it.third }.toSet())
+        assertEquals(setOf(outbox.bucket(partitionKey)), partitioned.map { it.third }.toSet())
         val unpartitioned = rows.single { it.first is OutboxEvent }
-        assertEquals(OutboxBuckets.of(unpartitioned.second), unpartitioned.third)
+        assertEquals(outbox.bucket(unpartitioned.second), unpartitioned.third)
     }
 
     private fun insert(event: PublicEvent) {
         transaction(database) {
-            EventsTable.insert {
-                it[EventsTable.id] = event.id
-                it[EventsTable.event] = event.original
-                it[EventsTable.bucket] = event.bucket
-                it[EventsTable.createdAt] = event.createdAt
-                it[EventsTable.traceInformation] = TraceInformation(null, null, null)
+            outbox.events.insert {
+                it[outbox.events.id] = event.id
+                it[outbox.events.event] = event.original
+                it[outbox.events.bucket] = outbox.bucket(event.original.partitionKey, event.id)
+                it[outbox.events.createdAt] = event.createdAt
+                it[outbox.events.traceInformation] = TraceInformation(null, null, null)
             }
         }
     }
 
-    private fun unpublished(): Long = transaction(database) { EventsTable.selectAll().count() }
+    private fun unpublished(): Long = transaction(database) { outbox.events.selectAll().count() }
 
     /** Keeps the advisory lock of a bucket for as long as the returned connection stays open. */
     private fun holdBucket(bucket: Int): Connection {

@@ -6,15 +6,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
-import org.junit.jupiter.api.BeforeEach
 
 internal const val TEST_BUCKET_COUNT = 16
 
-class OutboxBucketsTest {
-    @BeforeEach
-    fun configure() {
-        OutboxBuckets.configure(TEST_BUCKET_COUNT)
-    }
+class OutboxTest {
+    private val outbox = Outbox(TEST_BUCKET_COUNT)
 
     @Test
     fun `partition key defines the bucket`() {
@@ -23,20 +19,20 @@ class OutboxBucketsTest {
         val second = PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey))
 
         assertNotEquals(first.id, second.id)
-        assertEquals(OutboxBuckets.of(partitionKey), first.bucket)
-        assertEquals(first.bucket, second.bucket)
+        assertEquals(outbox.bucket(partitionKey), outbox.bucket(first))
+        assertEquals(outbox.bucket(first), outbox.bucket(second))
     }
 
     @Test
     fun `event without a partition key falls back to its own id`() {
         val event = PublicEvent(OutboxEvent(UUID.randomUUID()))
 
-        assertEquals(OutboxBuckets.of(event.id), event.bucket)
+        assertEquals(outbox.bucket(event.id), outbox.bucket(event))
     }
 
     @Test
     fun `buckets stay in range and spread the keys`() {
-        val buckets = (1..2000).map { OutboxBuckets.of(UUID.randomUUID()) }
+        val buckets = (1..2000).map { outbox.bucket(UUID.randomUUID()) }
 
         assertTrue(buckets.all { it in 0 until TEST_BUCKET_COUNT })
         assertEquals(TEST_BUCKET_COUNT, buckets.distinct().size)
@@ -48,24 +44,36 @@ class OutboxBucketsTest {
 
         assertEquals(
             Math.floorMod(key.mostSignificantBits xor key.leastSignificantBits, TEST_BUCKET_COUNT),
-            OutboxBuckets.of(key)
+            outbox.bucket(key)
         )
     }
 
     @Test
-    fun `refuses to write with a second bucket count`() {
-        val exception = assertFailsWith<OutboxBucketCountMismatchException> {
-            OutboxBuckets.configure(TEST_BUCKET_COUNT * 2)
-        }
+    fun `another bucket count is another layout`() {
+        val wider = Outbox(TEST_BUCKET_COUNT * 2)
+        val keys = (1..100).map { UUID.randomUUID() }
 
-        assertEquals(TEST_BUCKET_COUNT, exception.configured)
-        assertEquals(TEST_BUCKET_COUNT * 2, exception.requested)
-        assertEquals(TEST_BUCKET_COUNT, OutboxBuckets.count)
+        assertTrue(
+            keys.any { outbox.bucket(it) != wider.bucket(it) },
+            "a bucket count of its own re-maps the partition keys"
+        )
     }
 
     @Test
     fun `rejects a count out of range`() {
-        assertFailsWith<IllegalArgumentException> { OutboxBuckets.configure(0) }
-        assertFailsWith<IllegalArgumentException> { OutboxBuckets.configure(OutboxBuckets.MAX_COUNT + 1) }
+        assertFailsWith<IllegalArgumentException> { Outbox(0) }
+        assertFailsWith<IllegalArgumentException> { Outbox(Outbox.MAX_BUCKET_COUNT + 1) }
+    }
+
+    @Test
+    fun `refuses a second interceptor`() {
+        val installed = outbox.install()
+        try {
+            assertFailsWith<IllegalStateException> { Outbox(TEST_BUCKET_COUNT).install() }
+        } finally {
+            org.jetbrains.exposed.v1.jdbc.JdbcTransaction.globalInterceptors.remove(installed)
+        }
     }
 }
+
+private fun Outbox.bucket(event: PublicEvent): Int = bucket(event.original.partitionKey, event.id)
