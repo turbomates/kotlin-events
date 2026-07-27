@@ -1,11 +1,9 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
-import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.UUID
-import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
 import org.jetbrains.exposed.v1.core.eq
@@ -41,7 +39,6 @@ class EventSourcingStorage(private val database: Database) {
 
 internal object EventSourcingTable : UUIDTable("event_sourcing") {
     val rootId = text("root_id")
-    internal val event =
-        jsonb("data", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
+    internal val event = jsonb("data", EventSerialization.json(), EventSerialization.serializer())
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

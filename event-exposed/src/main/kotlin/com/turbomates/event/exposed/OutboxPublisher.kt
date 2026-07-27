@@ -2,7 +2,6 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Publisher
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import kotlin.random.Random
@@ -15,7 +14,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
@@ -185,14 +183,10 @@ class OutboxPublisher(
 }
 
 internal object EventsTable : UUIDTable("outbox_events") {
-    val event =
-        jsonb("event", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }, EventSerializer)
+    val event = jsonb("event", EventSerialization.json(), EventSerialization.serializer())
     val bucket = integer("bucket")
     val traceInformation =
-        jsonb(
-            "trace_information", Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false },
-            TraceInformation.serializer()
-        ).nullable()
+        jsonb("trace_information", EventSerialization.DEFAULT, TraceInformation.serializer()).nullable()
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

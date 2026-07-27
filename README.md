@@ -223,6 +223,24 @@ class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetri
 }
 ```
 
+**Custom serialization:**
+
+The `jsonb` columns of `outbox_events` and `event_sourcing` bind their format when the tables are
+first touched, so configure it at startup, before the first event is written or published. Build the
+`Json` on top of `EventSerialization.DEFAULT` to keep the flags the rows were written with:
+
+```kotlin
+EventSerialization.configure(
+    Json(from = EventSerialization.DEFAULT) { serializersModule = domainSerializers }
+)
+```
+
+`configure` also takes the `KSerializer<Event>` that decides what a row looks like, by default
+`EventSerializer` and its `{"type": <class>, "body": {...}}`. A table that already holds rows can only
+be read back by a serializer that understands them, so replacing it is a migration, not a setting. A
+call that comes after the columns bound their format throws `EventSerializationInUseException` instead
+of being silently ignored.
+
 **Schema:**
 
 `event-exposed` ships `outbox_events_postgres_table.sql`, an existing database is migrated with:
