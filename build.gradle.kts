@@ -2,7 +2,7 @@ import java.time.Duration
 
 plugins {
     java
-    kotlin("jvm") version "2.3.0"
+    kotlin("jvm") version "2.4.10"
     alias(deps.plugins.nexus.release)
     id("signing") apply true
     id("maven-publish") apply true
@@ -21,7 +21,15 @@ plugins {
 //}
 
 kotlin {
-    jvmToolchain(24)
+    jvmToolchain(25)
+}
+
+allprojects {
+    // the compiler embedded in detekt 1.23 does not know jvm targets above 22,
+    // and the target only matters for type resolution, not for the analyzed sources
+    tasks.withType(io.gitlab.arturbosch.detekt.Detekt::class).configureEach {
+        jvmTarget = "21"
+    }
 }
 
 
@@ -33,7 +41,7 @@ subprojects {
     apply(plugin = "signing")
     java {
         toolchain {
-            languageVersion.set(JavaLanguageVersion.of(21))
+            languageVersion.set(JavaLanguageVersion.of(25))
         }
         withJavadocJar()
         withSourcesJar()
