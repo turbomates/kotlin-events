@@ -284,10 +284,11 @@ migration, not a setting.
 
 **Schema:**
 
-`event-exposed` ships `outbox_events_postgres_table.sql`, an existing database is migrated with:
+`event-exposed` ships `outbox_events_postgres_table.sql` for a new database and
+`outbox_events_postgres_migration.sql` for one that already runs the released schema:
 
 ```sql
-ALTER TABLE outbox_events ADD COLUMN bucket integer;
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS bucket integer;
 -- 16 is the bucketCount the application is built with
 UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), 16) WHERE bucket IS NULL;
 ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL;
@@ -300,16 +301,17 @@ ALTER TABLE outbox_events ADD COLUMN sequence bigint GENERATED ALWAYS AS IDENTIT
 ALTER TABLE outbox_events ADD COLUMN attempts integer NOT NULL DEFAULT 0;
 ALTER TABLE outbox_events ADD COLUMN next_attempt_at timestamp with time zone;
 
+DROP INDEX IF EXISTS events_publisshed_idx;
 DROP INDEX IF EXISTS outbox_events_bucket_idx;
 CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, sequence) WHERE published_at IS NULL;
 CREATE INDEX outbox_events_blocked_idx ON outbox_events (bucket, partition_key) WHERE next_attempt_at IS NOT NULL;
 ```
 
-Backfilled rows are spread over the buckets by their id, the partition keys of the rows written by
-the new build are respected from the first insert. The backfilled `partition_key = id` makes every
-old row a stream of its own — they behave exactly as before — and the identity column numbers the
-existing rows in arbitrary order, so run the migration on a drained outbox (or accept that the
-backlog of one partition may replay out of order once).
+Run it on a drained outbox. The backfills only approximate what the new build writes — the real
+partition key of an old row was never persisted: backfilled rows are spread over the buckets by
+their id and every old row becomes a stream of its own, so a backlog left in the table may replay
+out of order once (the identity column also numbers the existing rows in arbitrary order). The rows
+written by the new build get their real partition keys from the first insert.
 
 **Event Sourcing:**
 
@@ -510,7 +512,7 @@ fun main() = runBlocking {
 ## Requirements
 
 - Kotlin 2.2.20+
-- Java 21+
+- Java 25+
 - PostgreSQL (for event-exposed module)
 - RabbitMQ (for event-rabbit module)
 

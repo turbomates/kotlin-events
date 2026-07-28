@@ -44,7 +44,7 @@ class OutboxPublisherTest {
             exec("DROP TABLE IF EXISTS outbox_events")
         }
         transaction(database) {
-            schema().forEach { exec(it) }
+            statements(SCHEMA).forEach { exec(it) }
         }
     }
 
@@ -216,6 +216,53 @@ class OutboxPublisherTest {
     }
 
     @Test
+    fun `migration upgrades the previous schema to a working outbox`() = runBlocking {
+        transaction(database) {
+            exec("DROP TABLE IF EXISTS outbox_events")
+        }
+        transaction(database) {
+            // the schema the released build ships, from before the buckets
+            exec(
+                """
+                CREATE TABLE outbox_events (
+                    id uuid NOT NULL PRIMARY KEY,
+                    event jsonb NOT NULL,
+                    created_at timestamp with time zone DEFAULT timezone('UTC'::text, statement_timestamp()) NOT NULL,
+                    published_at timestamp with time zone,
+                    trace_information jsonb NOT NULL
+                )
+                """.trimIndent()
+            )
+            exec("CREATE INDEX events_publisshed_idx ON outbox_events (published_at)")
+        }
+        val old = OutboxEvent(UUID.randomUUID())
+        transaction(database) {
+            // a row the released build left behind
+            exec(
+                "INSERT INTO outbox_events (id, event, trace_information) VALUES ('${UUID.randomUUID()}', " +
+                    "'{\"type\": \"${OutboxEvent::class.qualifiedName}\", \"body\": {\"id\": \"${old.id}\"}}', " +
+                    "'{\"traceparent\": null, \"tracestate\": null, \"baggage\": null}')"
+            )
+        }
+        transaction(database) {
+            statements(MIGRATION).forEach { exec(it) }
+        }
+
+        val publisher = CollectingPublisher()
+        val event = PublicEvent(OutboxEvent(UUID.randomUUID()))
+        insert(event)
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
+        awaitUntil { unpublished() == 0L }
+        job.cancelAndJoin()
+
+        assertEquals(
+            setOf(old.id, (event.original as OutboxEvent).id),
+            publisher.published.toSet(),
+            "the backfilled row and the new one are both published"
+        )
+    }
+
+    @Test
     fun `events of one partition key are written to one bucket`() {
         val partitionKey = UUID.randomUUID()
         transaction(database) {
@@ -271,8 +318,8 @@ class OutboxPublisherTest {
         }
     }
 
-    private fun schema(): List<String> {
-        val sql = String(checkNotNull(javaClass.classLoader.getResourceAsStream(SCHEMA)).readAllBytes())
+    private fun statements(resource: String): List<String> {
+        val sql = String(checkNotNull(javaClass.classLoader.getResourceAsStream(resource)).readAllBytes())
         return sql.split(";").map { it.trim() }.filter { it.isNotEmpty() }
     }
 
@@ -311,6 +358,7 @@ class OutboxPublisherTest {
 
     companion object {
         private const val SCHEMA = "outbox_events_postgres_table.sql"
+        private const val MIGRATION = "outbox_events_postgres_migration.sql"
         private val POLL_DELAY = 50.milliseconds
         private val AWAIT_TIMEOUT = 30.seconds
         private lateinit var container: PostgreSQLContainer<*>
