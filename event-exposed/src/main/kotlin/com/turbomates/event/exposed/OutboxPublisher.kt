@@ -4,6 +4,7 @@ import com.turbomates.event.Event
 import com.turbomates.event.Publisher
 import java.util.UUID
 import kotlin.time.Duration
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,8 @@ class OutboxPublisher(
             while (isActive) {
                 try {
                     sweep()
+                } catch (cancel: CancellationException) {
+                    throw cancel
                 } catch (ignore: Throwable) {
                     logger.error("error while publishing events", ignore)
                 } finally {
@@ -69,6 +72,8 @@ class OutboxPublisher(
                 if (publish(bucket)) {
                     owned++
                 }
+            } catch (cancel: CancellationException) {
+                throw cancel
             } catch (ignore: Throwable) {
                 metrics.bucketFailed(bucket, ignore)
                 logger.error("error while publishing events of bucket $bucket", ignore)
@@ -104,6 +109,8 @@ class OutboxPublisher(
                 if (publish(event, original)) {
                     published++
                 }
+            } catch (cancel: CancellationException) {
+                throw cancel
             } catch (ignore: Throwable) {
                 failed++
                 blocked.add(event.partitionKey)

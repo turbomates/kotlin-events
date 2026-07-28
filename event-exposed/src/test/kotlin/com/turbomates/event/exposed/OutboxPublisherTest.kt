@@ -245,7 +245,8 @@ class OutboxPublisherTest {
             )
         }
         transaction(database) {
-            statements(MIGRATION).forEach { exec(it) }
+            // the migration the README documents, 16 standing in for the bucketCount of the application
+            MIGRATION.forEach { exec(it) }
         }
 
         val publisher = CollectingPublisher()
@@ -358,7 +359,22 @@ class OutboxPublisherTest {
 
     companion object {
         private const val SCHEMA = "outbox_events_postgres_table.sql"
-        private const val MIGRATION = "outbox_events_postgres_migration.sql"
+        private val MIGRATION = listOf(
+            "ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS bucket integer",
+            "UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), $TEST_BUCKET_COUNT) WHERE bucket IS NULL",
+            "ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL",
+            "ALTER TABLE outbox_events ADD COLUMN partition_key uuid",
+            "UPDATE outbox_events SET partition_key = id WHERE partition_key IS NULL",
+            "ALTER TABLE outbox_events ALTER COLUMN partition_key SET NOT NULL",
+            "ALTER TABLE outbox_events ADD COLUMN sequence bigint GENERATED ALWAYS AS IDENTITY",
+            "ALTER TABLE outbox_events ADD COLUMN attempts integer NOT NULL DEFAULT 0",
+            "ALTER TABLE outbox_events ADD COLUMN next_attempt_at timestamp with time zone",
+            "DROP INDEX IF EXISTS events_publisshed_idx",
+            "DROP INDEX IF EXISTS outbox_events_bucket_idx",
+            "CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, sequence) WHERE published_at IS NULL",
+            "CREATE INDEX outbox_events_blocked_idx ON outbox_events (bucket, partition_key) " +
+                "WHERE next_attempt_at IS NOT NULL"
+        )
         private val POLL_DELAY = 50.milliseconds
         private val AWAIT_TIMEOUT = 30.seconds
         private lateinit var container: PostgreSQLContainer<*>

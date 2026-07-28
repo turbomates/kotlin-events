@@ -284,8 +284,8 @@ migration, not a setting.
 
 **Schema:**
 
-`event-exposed` ships `outbox_events_postgres_table.sql` for a new database and
-`outbox_events_postgres_migration.sql` for one that already runs the released schema:
+`event-exposed` ships `outbox_events_postgres_table.sql` for a new database. One that already runs
+the released schema is migrated with (16 is the `bucketCount` the application is built with):
 
 ```sql
 ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS bucket integer;
