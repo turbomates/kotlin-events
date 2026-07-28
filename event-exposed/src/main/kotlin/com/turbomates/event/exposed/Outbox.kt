@@ -12,16 +12,25 @@ import kotlin.time.Duration
 import kotlin.time.toKotlinDuration
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.v1.core.Expression
+import org.jetbrains.exposed.v1.core.QueryBuilder
 import org.jetbrains.exposed.v1.core.SortOrder
+import org.jetbrains.exposed.v1.core.TextColumnType
 import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.castTo
 import org.jetbrains.exposed.v1.core.dao.id.java.UUIDTable
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.isNull
+import org.jetbrains.exposed.v1.core.java.javaUUID
+import org.jetbrains.exposed.v1.core.notInList
+import org.jetbrains.exposed.v1.javatime.CurrentDateTime
 import org.jetbrains.exposed.v1.javatime.datetime
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
-import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.json.jsonb
 
 /**
@@ -45,12 +54,14 @@ import org.jetbrains.exposed.v1.json.jsonb
  * the publishing transaction stays one event wide.
  * @param bucketLock how a bucket is held while it is published, by default a Postgres advisory lock.
  * @param serialization format of the `jsonb` columns holding the events.
+ * @param retryPolicy backoff of an event the publishers keep failing, see [OutboxRetryPolicy].
  */
 class Outbox(
     private val bucketCount: Int,
     private val batchLimit: Int = DEFAULT_BATCH_LIMIT,
     private val bucketLock: OutboxBucketLock = PostgresAdvisoryBucketLock(),
-    private val serialization: EventSerialization = EventSerialization()
+    private val serialization: EventSerialization = EventSerialization(),
+    private val retryPolicy: OutboxRetryPolicy = OutboxRetryPolicy()
 ) {
     init {
         require(bucketCount in 1..MAX_BUCKET_COUNT) {
@@ -106,18 +117,64 @@ class Outbox(
         return bucketLock.tryLock(transaction, bucket)
     }
 
-    /** The unpublished head of [bucket], up to `batchLimit` events. Call it inside a transaction. */
+    /**
+     * The unpublished head of [bucket], up to `batchLimit` events in the order they were written,
+     * without the streams whose head waits out a backoff: nothing overtakes a failed event of its
+     * own partition, the other partitions of the bucket are unaffected. A row that can no longer be
+     * decoded is returned with its [OutboxBatch.Item.error] instead of failing the whole bucket.
+     * Call it inside the transaction that holds the bucket.
+     */
     fun load(bucket: Int): OutboxBatch {
+        val blocked = events
+            .select(events.partitionKey)
+            .withDistinct()
+            .where {
+                (events.bucket eq bucket) and events.publishedAt.isNull() and
+                    (events.nextAttemptAt greater CurrentDateTime)
+            }
+            .map { it[events.partitionKey] }
+        val rawEvent = events.event.castTo<String>(TextColumnType())
         val rows = events
-            .selectAll()
-            .where { (events.bucket eq bucket) and events.publishedAt.isNull() }
-            .orderBy(events.createdAt to SortOrder.ASC, events.id to SortOrder.ASC)
+            .select(events.id, rawEvent, events.partitionKey, events.attempts, events.traceInformation, events.createdAt)
+            .where {
+                val head = (events.bucket eq bucket) and events.publishedAt.isNull()
+                if (blocked.isEmpty()) head else head and (events.partitionKey notInList blocked)
+            }
+            .orderBy(events.sequence to SortOrder.ASC)
             .limit(batchLimit)
             .toList()
         return OutboxBatch(
-            rows.map { PublicEvent(it[events.event], it[events.id].value, it[events.traceInformation]) },
+            rows.map { row ->
+                val decoded = runCatching { serialization.json.decodeFromString(serialization.serializer, row[rawEvent]) }
+                OutboxBatch.Item(
+                    id = row[events.id].value,
+                    partitionKey = row[events.partitionKey],
+                    attempts = row[events.attempts],
+                    event = decoded.getOrNull(),
+                    traceInformation = row[events.traceInformation],
+                    error = decoded.exceptionOrNull()
+                )
+            },
             rows.firstOrNull()?.get(events.createdAt)
         )
+    }
+
+    /**
+     * Counts a failed publish of a row: one more attempt made, the next one no earlier than the
+     * backoff of the retry policy from now — database time, the clocks of the pods stay out of it.
+     * Call it in a transaction of its own, after the publishing transaction rolled back and while
+     * the bucket is still held: until the delay runs out, [load] keeps the whole stream of the row
+     * back, so its events are not published out of order.
+     *
+     * @param attempts the value the row was loaded with, see [OutboxBatch.Item.attempts].
+     * @return false when the row is already gone.
+     */
+    fun failed(id: UUID, attempts: Int): Boolean {
+        val made = attempts + 1
+        return events.update({ events.id eq id }) {
+            it[events.attempts] = made
+            it[events.nextAttemptAt] = NextAttemptAt(retryPolicy.delay(made))
+        } > 0
     }
 
     /**
@@ -138,24 +195,39 @@ class Outbox(
             this[events.id] = event.id
             this[events.event] = event.original
             this[events.bucket] = bucket(event.original.partitionKey, event.id)
+            this[events.partitionKey] = event.original.partitionKey ?: event.id
             this[events.createdAt] = event.createdAt
             this[events.traceInformation] = event.traceInformation
         }
         eventSourcing.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
-            this[eventSourcing.id] = UUID.randomUUID()
+            this[eventSourcing.id] = UUIDv7.randomUUID()
             this[eventSourcing.rootId] = event.rootId
             this[eventSourcing.event] = event
             this[eventSourcing.createdAt] = event.timestamp
         }
     }
 
-    class OutboxBatch(val events: List<PublicEvent>, val oldestCreatedAt: LocalDateTime?) {
+    class OutboxBatch(val events: List<Item>, val oldestCreatedAt: LocalDateTime?) {
         fun lag(): Duration {
             val oldest = oldestCreatedAt ?: return Duration.ZERO
             return java.time.Duration.between(oldest, LocalDateTime.now(ZoneOffset.UTC))
                 .toKotlinDuration()
                 .coerceAtLeast(Duration.ZERO)
         }
+
+        /**
+         * One unpublished row. [event] is null when the row can not be read back — an unknown type
+         * mid-rollout, a serializer that lost a field — with the cause in [error]; the publisher
+         * treats it as one more failed attempt, not as a failure of the batch.
+         */
+        class Item(
+            val id: UUID,
+            val partitionKey: UUID,
+            val attempts: Int,
+            val event: Event?,
+            val traceInformation: TraceInformation?,
+            val error: Throwable? = null
+        )
     }
 
     companion object {
@@ -191,10 +263,25 @@ data class EventSerialization(
 internal class EventsTable(serialization: EventSerialization) : UUIDTable("outbox_events") {
     val event = jsonb("event", serialization.json, serialization.serializer)
     val bucket = integer("bucket")
+
+    /** The stream of the row: the partition key of the event, its own id when it has none. */
+    val partitionKey = javaUUID("partition_key")
+
+    /** Publish order, assigned by the database: client timestamps are neither unique nor monotonic. */
+    val sequence = long("sequence").databaseGenerated()
+    val attempts = integer("attempts").default(0)
+    val nextAttemptAt = datetime("next_attempt_at").nullable()
     val traceInformation =
         jsonb("trace_information", EventSerialization.DEFAULT_JSON, TraceInformation.serializer()).nullable()
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
+}
+
+/** `now() + delay` of the database, so the backoff does not depend on the clock of a pod. */
+private class NextAttemptAt(private val delay: kotlin.time.Duration) : Expression<LocalDateTime?>() {
+    override fun toQueryBuilder(queryBuilder: QueryBuilder) {
+        queryBuilder { +"(now() + ${delay.inWholeMilliseconds} * interval '1 millisecond')" }
+    }
 }
 
 internal class EventSourcingTable(serialization: EventSerialization) : UUIDTable("event_sourcing") {

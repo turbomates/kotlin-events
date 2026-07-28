@@ -1,5 +1,6 @@
 package com.turbomates.event.exposed
 
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration
@@ -12,6 +13,8 @@ class RecordingOutboxMetrics : OutboxMetrics {
     private val failed = ConcurrentHashMap<Int, AtomicLong>()
     private val skipped = ConcurrentHashMap<Int, AtomicLong>()
     private val acquired = ConcurrentHashMap.newKeySet<Int>()
+    private val eventFailures = ConcurrentHashMap<UUID, Int>()
+    private val sweeps = AtomicLong()
 
     @Volatile
     private var ownedBuckets: Int = 0
@@ -38,9 +41,14 @@ class RecordingOutboxMetrics : OutboxMetrics {
         failed.counter(bucket).incrementAndGet()
     }
 
+    override fun eventFailed(bucket: Int, eventId: UUID, attempts: Int, error: Throwable) {
+        eventFailures[eventId] = attempts
+    }
+
     override fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {
         this.ownedBuckets = ownedBuckets
         this.totalBuckets = totalBuckets
+        sweeps.incrementAndGet()
     }
 
     fun snapshot(): Snapshot = Snapshot(
@@ -51,7 +59,9 @@ class RecordingOutboxMetrics : OutboxMetrics {
         pending = pending.toMap(),
         published = published.mapValues { it.value.get() },
         failed = failed.mapValues { it.value.get() },
-        skipped = skipped.mapValues { it.value.get() }
+        skipped = skipped.mapValues { it.value.get() },
+        eventFailures = eventFailures.toMap(),
+        sweeps = sweeps.get()
     )
 
     private fun ConcurrentHashMap<Int, AtomicLong>.counter(bucket: Int): AtomicLong =
@@ -65,7 +75,9 @@ class RecordingOutboxMetrics : OutboxMetrics {
         val pending: Map<Int, Int>,
         val published: Map<Int, Long>,
         val failed: Map<Int, Long>,
-        val skipped: Map<Int, Long>
+        val skipped: Map<Int, Long>,
+        val eventFailures: Map<UUID, Int>,
+        val sweeps: Long
     ) {
         val maxLag: Duration get() = lag.values.maxOrNull() ?: Duration.ZERO
         val publishedTotal: Long get() = published.values.sum()

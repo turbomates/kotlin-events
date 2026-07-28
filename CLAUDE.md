@@ -49,7 +49,7 @@ Foundation module providing core event-driven abstractions. All other modules de
 - `LocalPublisher`: In-process synchronous event publisher
 - `SubscribersRegistry`: Type-safe registry mapping `Event.Key<T>` to subscribers
 - `EventSubscriber<T>`: Handler for single event type with `invoke(event: T)` operator
-- `EventStore`: Temporary LIFO storage for events raised during a transaction
+- `EventStore`: Temporary FIFO storage for events raised during a transaction, drained in raise order
 - `TelemetryService`: Interface for distributed tracing (default: NoOpTelemetryService)
 - `TraceInformation`: W3C trace context carrier (traceparent, tracestate, baggage)
 
@@ -57,15 +57,16 @@ Foundation module providing core event-driven abstractions. All other modules de
 Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 
 **Key components:**
-- `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`). All of it is called inside a transaction opened by the caller
+- `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, retry policy, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`, `failed`). All of it is called inside a transaction opened by the caller
+- `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
 - `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
-- `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
+- `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, for the application registry (default `NoOpOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
 - `EventSerialization`: `Json` and `KSerializer<Event>` of the jsonb columns, carried by the `Outbox`
-- `EventsTable`: Database table for outbox events (jsonb event, bucket, trace_information, published_at)
+- `EventsTable`: Database table for outbox events (jsonb event, bucket, partition_key, database-assigned sequence, attempts, next_attempt_at, trace_information, published_at)
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
 **Pattern:** Events are persisted atomically with business data in the same transaction. A background coroutine sweeps buckets, locks one bucket at a time and delegates its events, one transaction each, to a chain of Publishers.
@@ -101,9 +102,14 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
    buckets held by another worker are skipped
 5. Each event is published in a transaction of its own (`inTopLevelSuspendTransaction`, its own
    connection): the row is deleted first, then all publishers in chain are called (LocalPublisher,
-   RabbitPublisher, etc.), then the transaction commits
-6. A publisher that throws rolls the deletion back, so the event is retried on the next sweep and the
-   rest of the batch is unaffected
+   RabbitPublisher, etc.), then the transaction commits. Batches are ordered by the
+   database-assigned `sequence` column, so events go out in the order they were raised
+6. A publisher that throws rolls the deletion back; a separate transaction counts the attempt and
+   sets `next_attempt_at` to `now() + backoff` (`OutboxRetryPolicy`). Until that moment the whole
+   stream (`partition_key`) of the event is skipped — in the running batch and by `load` of later
+   sweeps — so nothing is published out of order with its partition, other streams continue. A row
+   that fails to decode is treated the same way (one failed attempt of its stream), not as a
+   failure of the bucket
 
 ### Outbox Buckets
 `Outbox(bucketCount = ...)` is required and has no default: it describes the data already written, not

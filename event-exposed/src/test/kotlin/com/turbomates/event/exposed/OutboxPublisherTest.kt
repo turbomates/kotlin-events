@@ -11,8 +11,10 @@ import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import kotlin.time.Duration
+import kotlin.time.Duration.Companion.hours
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.cancelAndJoin
@@ -61,8 +63,7 @@ class OutboxPublisherTest {
         awaitUntil { publisher.published.isNotEmpty() }
         job.cancelAndJoin()
 
-        assertEquals(1, publisher.published.size)
-        assertEquals((event.original as OutboxEvent).id, publisher.published.first().id)
+        assertEquals(listOf((event.original as OutboxEvent).id), publisher.published.toList())
         assertEquals(0L, unpublished())
     }
 
@@ -74,7 +75,7 @@ class OutboxPublisherTest {
         val metrics = RecordingOutboxMetrics()
 
         val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY, metrics = metrics).start()
-        awaitUntil { unpublished() == 0L }
+        awaitUntil { unpublished() == 0L && metrics.snapshot().sweeps > 0 }
         job.cancelAndJoin()
 
         assertEquals(events.size, publisher.published.size)
@@ -102,7 +103,7 @@ class OutboxPublisherTest {
             awaitUntil { publisher.published.isNotEmpty() && metrics.snapshot().ownedBuckets > 0 }
             job.cancelAndJoin()
 
-            assertEquals(listOf((free.original as OutboxEvent).id), publisher.published.map { it.id })
+            assertEquals(listOf((free.original as OutboxEvent).id), publisher.published.toList())
             assertEquals(1L, unpublished())
             val snapshot = metrics.snapshot()
             assertFalse(lockedBucket in snapshot.acquiredBuckets)
@@ -117,22 +118,101 @@ class OutboxPublisherTest {
     }
 
     @Test
-    fun `a failing event does not republish the rest of its batch`() = runBlocking {
+    fun `a failing event blocks its stream and the other streams continue`() = runBlocking {
         val partitionKey = UUID.randomUUID()
-        val events = (1..5).map { PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey)) }
-        events.forEach { insert(it) }
-        val failing = (events[2].original as PartitionedOutboxEvent).id
-        val publisher = FailingPublisher(failing)
+        val stream = (1..3).map { PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey)) }
+        val other = PublicEvent(OutboxEvent(UUID.randomUUID()))
+        stream.forEach { insert(it) }
+        insert(other)
+        val head = stream.first()
+        val publisher = FailingPublisher(head.original.testId())
+        val metrics = RecordingOutboxMetrics()
+        val retrying = Outbox(TEST_BUCKET_COUNT, retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours))
 
-        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
-        awaitUntil { unpublished() == 1L && publisher.attempts.count { it == failing } > 2 }
+        val job = OutboxPublisher(database, listOf(publisher), retrying, delay = POLL_DELAY, metrics = metrics).start()
+        awaitUntil {
+            val snapshot = metrics.snapshot()
+            (other.original as OutboxEvent).id in publisher.published &&
+                snapshot.eventFailures.isNotEmpty() && snapshot.sweeps >= 10
+        }
         job.cancelAndJoin()
 
-        val delivered = publisher.published
-        assertEquals(4, delivered.size, "every event but the failing one is published exactly once")
-        assertEquals(delivered.toSet().size, delivered.size)
-        assertFalse(failing in delivered)
-        assertEquals(1L, unpublished())
+        assertEquals(1, publisher.attempts.count { it == head.original.testId() }, "the backoff keeps the head out")
+        assertFalse(stream[1].original.testId() in publisher.attempts, "nothing overtakes the failed head")
+        assertFalse(stream[2].original.testId() in publisher.attempts, "nothing overtakes the failed head")
+        assertEquals(listOf((other.original as OutboxEvent).id), publisher.published.toList())
+        assertEquals(3L, unpublished())
+        assertEquals(1, metrics.snapshot().eventFailures[head.id])
+        val (attemptsMade, nextAttemptAt) = transaction(database) {
+            val row = outbox.events.selectAll().first { it[outbox.events.id].value == head.id }
+            row[outbox.events.attempts] to row[outbox.events.nextAttemptAt]
+        }
+        assertEquals(1, attemptsMade)
+        assertNotNull(nextAttemptAt, "the failed row carries its backoff")
+    }
+
+    @Test
+    fun `a deferred stream is retried after its backoff and drains in order`() = runBlocking {
+        val partitionKey = UUID.randomUUID()
+        val stream = (1..3).map { PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey)) }
+        stream.forEach { insert(it) }
+        val head = stream.first().original.testId()
+        val publisher = FlakyPublisher(head, failures = 2)
+        val retrying = Outbox(
+            TEST_BUCKET_COUNT,
+            retryPolicy = OutboxRetryPolicy(initialDelay = 100.milliseconds, multiplier = 1.0)
+        )
+
+        val job = OutboxPublisher(database, listOf(publisher), retrying, delay = POLL_DELAY).start()
+        awaitUntil { unpublished() == 0L }
+        job.cancelAndJoin()
+
+        assertEquals(stream.map { it.original.testId() }, publisher.published.toList())
+        assertEquals(3, publisher.attempts.count { it == head }, "two failures and the publish")
+    }
+
+    @Test
+    fun `a row that can not be decoded blocks only its stream`() = runBlocking {
+        val partitionKey = UUID.randomUUID()
+        val blocked = PublicEvent(PartitionedOutboxEvent(UUID.randomUUID(), partitionKey))
+        val free = PublicEvent(OutboxEvent(UUID.randomUUID()))
+        val broken = UUID.randomUUID()
+        transaction(database) {
+            exec(
+                "INSERT INTO outbox_events (id, event, bucket, partition_key, trace_information) VALUES (" +
+                    "'$broken', '{\"type\": \"com.missing.Event\", \"body\": {}}', " +
+                    "${outbox.bucket(partitionKey)}, '$partitionKey', " +
+                    "'{\"traceparent\": null, \"tracestate\": null, \"baggage\": null}')"
+            )
+        }
+        insert(blocked)
+        insert(free)
+        val publisher = CollectingPublisher()
+        val metrics = RecordingOutboxMetrics()
+
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY, metrics = metrics).start()
+        awaitUntil { publisher.published.isNotEmpty() && metrics.snapshot().eventFailures.isNotEmpty() }
+        job.cancelAndJoin()
+
+        assertEquals(listOf((free.original as OutboxEvent).id), publisher.published.toList())
+        assertEquals(2L, unpublished(), "the broken row and the event behind it stay")
+        assertTrue((metrics.snapshot().eventFailures[broken] ?: 0) >= 1)
+    }
+
+    @Test
+    fun `events of one transaction are published in the order they were raised`() = runBlocking {
+        val partitionKey = UUID.randomUUID()
+        val ids = (1..5).map { UUID.randomUUID() }
+        transaction(database) {
+            ids.forEach { events.addEvent(PartitionedOutboxEvent(it, partitionKey)) }
+        }
+        val publisher = CollectingPublisher()
+
+        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY).start()
+        awaitUntil { unpublished() == 0L }
+        job.cancelAndJoin()
+
+        assertEquals(ids, publisher.published.toList())
     }
 
     @Test
@@ -162,6 +242,7 @@ class OutboxPublisherTest {
                 it[outbox.events.id] = event.id
                 it[outbox.events.event] = event.original
                 it[outbox.events.bucket] = outbox.bucket(event.original.partitionKey, event.id)
+                it[outbox.events.partitionKey] = event.original.partitionKey ?: event.id
                 it[outbox.events.createdAt] = event.createdAt
                 it[outbox.events.traceInformation] = TraceInformation(null, null, null)
             }
@@ -196,21 +277,34 @@ class OutboxPublisherTest {
     }
 
     class CollectingPublisher : Publisher {
-        val published: MutableList<OutboxEvent> = Collections.synchronizedList(mutableListOf())
+        val published: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
         override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
-            published.add(event as OutboxEvent)
+            published.add(event.testId())
         }
     }
 
-    /** Fails every time it is given [failing], collects everything else. */
+    /** Fails every attempt of [failing], collects everything else. */
     class FailingPublisher(private val failing: UUID) : Publisher {
         val attempts: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
         val published: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
 
         override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
-            val id = (event as PartitionedOutboxEvent).id
+            val id = event.testId()
             attempts.add(id)
             check(id != failing) { "event $id can not be published" }
+            published.add(id)
+        }
+    }
+
+    /** Fails the first [failures] attempts of [flaky], then lets it through. */
+    class FlakyPublisher(private val flaky: UUID, private val failures: Int) : Publisher {
+        val attempts: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
+        val published: MutableList<UUID> = Collections.synchronizedList(mutableListOf())
+
+        override suspend fun publish(event: Event, traceInformation: TraceInformation?) {
+            val id = event.testId()
+            attempts.add(id)
+            check(id != flaky || attempts.count { it == flaky } > failures) { "event $id is not ready yet" }
             published.add(id)
         }
     }
@@ -260,4 +354,10 @@ data class PartitionedOutboxEvent(
     override val partitionKey get() = userId
 
     companion object : Key<PartitionedOutboxEvent>
+}
+
+private fun Event.testId(): UUID = when (this) {
+    is OutboxEvent -> id
+    is PartitionedOutboxEvent -> id
+    else -> error("unexpected event $this")
 }

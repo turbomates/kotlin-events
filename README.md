@@ -224,6 +224,40 @@ class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetri
 }
 ```
 
+**Failing events, backoff and order:**
+
+A publisher that throws rolls the deletion of the row back, so the event is never lost — but it is
+not hammered either. Every failure increments `attempts` and sets `next_attempt_at` to
+`now() + backoff` (database time), and until that moment the whole stream of the event is skipped by
+the sweeps: nothing is published out of order with its partition, the other streams of the bucket
+continue. The same applies to a row that can no longer be decoded — an unknown event type
+mid-rollout, for example — it costs one failed attempt of its own stream, not the bucket.
+
+The backoff is exponential and belongs to the `Outbox`:
+
+```kotlin
+val outbox = Outbox(
+    bucketCount = 16,
+    retryPolicy = OutboxRetryPolicy(
+        initialDelay = 1.seconds, // attempt N waits initialDelay * multiplier^(N-1)
+        multiplier = 2.0,
+        maxDelay = 5.minutes
+    )
+)
+```
+
+There is no attempt limit and no dead-letter table on purpose: giving an event up would silently
+break the order of its stream, and that is a decision the application has to make, not the library.
+A poison event is almost always a bug — a subscriber that chokes on the data, a serializer that lost
+a type — and once the fix is deployed the event publishes on the next try and its stream drains
+itself, in order, with no manual repair. Alert on `OutboxMetrics.eventFailed` (its `attempts` keeps
+growing while nobody looks); the truly unrecoverable row is removed by hand:
+`DELETE FROM outbox_events WHERE id = '...'`, which releases its stream.
+
+Events are published in the order they were raised: the order inside a transaction is kept by the
+`EventStore`, the order in the table by the database-assigned `sequence` column — client timestamps
+are neither unique nor monotonic across pods, so they are data, not ordering.
+
 **Custom serialization:**
 
 The format of the `jsonb` columns comes with the outbox, build the `Json` on top of
@@ -257,11 +291,25 @@ ALTER TABLE outbox_events ADD COLUMN bucket integer;
 -- 16 is the bucketCount the application is built with
 UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), 16) WHERE bucket IS NULL;
 ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL;
-CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, created_at, id) WHERE published_at IS NULL;
+
+ALTER TABLE outbox_events ADD COLUMN partition_key uuid;
+UPDATE outbox_events SET partition_key = id WHERE partition_key IS NULL;
+ALTER TABLE outbox_events ALTER COLUMN partition_key SET NOT NULL;
+
+ALTER TABLE outbox_events ADD COLUMN sequence bigint GENERATED ALWAYS AS IDENTITY;
+ALTER TABLE outbox_events ADD COLUMN attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE outbox_events ADD COLUMN next_attempt_at timestamp with time zone;
+
+DROP INDEX IF EXISTS outbox_events_bucket_idx;
+CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, sequence) WHERE published_at IS NULL;
+CREATE INDEX outbox_events_blocked_idx ON outbox_events (bucket, partition_key) WHERE next_attempt_at IS NOT NULL;
 ```
 
 Backfilled rows are spread over the buckets by their id, the partition keys of the rows written by
-the new build are respected from the first insert.
+the new build are respected from the first insert. The backfilled `partition_key = id` makes every
+old row a stream of its own — they behave exactly as before — and the identity column numbers the
+existing rows in arbitrary order, so run the migration on a drained outbox (or accept that the
+backlog of one partition may replay out of order once).
 
 **Event Sourcing:**
 

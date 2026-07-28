@@ -1,5 +1,6 @@
 package com.turbomates.event.exposed
 
+import java.util.UUID
 import kotlin.time.Duration
 
 /**
@@ -24,6 +25,13 @@ interface OutboxMetrics {
     fun bucketSkipped(bucket: Int) {}
 
     fun bucketPublished(bucket: Int, published: Int, failed: Int) {}
+
+    /**
+     * A publish of one event failed — a publisher threw, or the row can not be decoded — attempt
+     * [attempts] was counted and the stream of the event waits out its backoff. This is the signal
+     * a poison event alert is built on: [attempts] keeps growing while nobody looks.
+     */
+    fun eventFailed(bucket: Int, eventId: UUID, attempts: Int, error: Throwable) {}
 
     fun bucketFailed(bucket: Int, error: Throwable) {}
 
