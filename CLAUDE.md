@@ -170,8 +170,8 @@ val outboxPublisher = OutboxPublisher(database, publishers, Outbox(bucketCount =
 ## Build Configuration
 
 - Gradle version catalog in `settings.gradle.kts` under `deps` namespace
-- Java 21 required
-- Kotlin 2.2.20
+- Java 25 required
+- Kotlin 2.4.10
 - Multi-module setup with shared publishing configuration in root `build.gradle.kts`
 - Maven Central publishing configured with Nexus Staging plugin
 
