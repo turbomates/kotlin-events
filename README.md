@@ -139,7 +139,10 @@ val database = Database.connect(
 )
 
 // Describe the outbox and register its interceptor for every transaction
-val outbox = Outbox(bucketCount = 16)
+val outbox = Outbox(
+    bucketCount = 16,
+    batchLimit = 100                     // events per bucket, not per sweep
+)
 outbox.install()
 
 // Start outbox publisher
@@ -152,7 +155,6 @@ val outboxPublisher = OutboxPublisher(
     database = database,
     publishers = publishers,
     outbox = outbox,
-    batchSize = 100,                     // events per bucket, not per sweep
     delay = Duration.parse("1s")         // pause between sweeps
 )
 
@@ -179,8 +181,10 @@ it in code next to the other constants of the application, and change it only by
 first. Every process of the application builds its `Outbox` with the same count, and the one instance
 is handed to both `install()` and the publisher.
 
-`batchSize` is per bucket: a sweep publishes up to `batchSize * bucketCount` events. It only bounds
+`batchLimit` is per bucket: a sweep publishes up to `batchLimit * bucketCount` events. It only bounds
 how much one worker takes from a bucket per sweep, the publishing transaction stays one event wide.
+It belongs to the `Outbox` together with the bucket count, the publisher only decides how often it
+sweeps.
 
 **Several workers:**
 
@@ -192,12 +196,12 @@ databases can plug their own implementation of `OutboxBucketLock` (or use `Singl
 when a single worker publishes the outbox):
 
 ```kotlin
-OutboxPublisher(
-    database = database,
-    publishers = publishers,
+val outbox = Outbox(
     bucketCount = 16,
     bucketLock = PostgresAdvisoryBucketLock(namespace = 42)
 )
+
+OutboxPublisher(database = database, publishers = publishers, outbox = outbox)
 ```
 
 **Metrics:**
@@ -228,15 +232,16 @@ serializers of the value types the events carry, and keep the flags the existing
 with:
 
 ```kotlin
-val outbox = Outbox(
-    bucketCount = 16,
-    serialization = EventSerialization(
-        Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domainSerializers }
-    )
+val serialization = EventSerialization(
+    Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domainSerializers }
 )
 
-val storage = EventSourcingStorage(database, outbox.serialization)
+val outbox = Outbox(bucketCount = 16, serialization = serialization)
+val storage = EventSourcingStorage(database, serialization)
 ```
+
+The `Outbox` keeps its serialization to itself, so build the `EventSerialization` once and hand the
+same instance to everything that reads those columns.
 
 The second parameter of `EventSerialization` is the `KSerializer<Event>` that decides what a row looks
 like, by default `EventSerializer` and its `{"type": <class>, "body": {...}}`. A table that already

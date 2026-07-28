@@ -57,9 +57,9 @@ Foundation module providing core event-driven abstractions. All other modules de
 Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 
 **Key components:**
-- `Outbox`: Bucket count, serialization and table instances, built by the application and shared by the interceptor and the publisher
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore`, registered with `Outbox.install()`
-- `OutboxPublisher`: Background worker that sweeps the buckets of `outbox_events` and publishes events
+- `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`). All of it is called inside a transaction opened by the caller
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`
+- `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper with UUID, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, for the application registry (default `NoOpOutboxMetrics`)
@@ -74,7 +74,10 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 Provides RabbitMQ distribution with retry/dead-letter queue handling.
 
 **Key components:**
-- `RabbitPublisher`: Publishes events to RabbitMQ topic exchange with trace headers
+- `RabbitPublisher`: Publishes events to RabbitMQ topic exchange with trace headers. Waits for the
+  publisher confirm before returning (a nack or a timeout throws, so the outbox keeps the event),
+  serializes publishes on one channel with a mutex (a confirm covers everything unconfirmed on the
+  channel, not one message) and reopens connection and channel after a failure. `AutoCloseable`
 - `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support
 - `ListenerDeliveryCallback`: Handles message delivery with automatic retry logic
 - `QueueConfig`: Configuration for queue behavior (prefetch, maxRetries, retryDelay)
@@ -92,7 +95,8 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 1. Application raises event during transaction: `eventStore.addEvent(event)`
 2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically, each row
    carrying the bucket of `partitionKey ?: eventId`
-3. `OutboxPublisher` sweeps the buckets in a background coroutine, starting at a rotating position
+3. `OutboxPublisher` sweeps the buckets given by `Outbox.nextSweep()` in a background coroutine, that
+   list starts at a position rotating by one on every call
 4. A transaction takes a non blocking advisory lock on the bucket and holds it for the whole batch,
    buckets held by another worker are skipped
 5. Each event is published in a transaction of its own (`inTopLevelSuspendTransaction`, its own
@@ -105,7 +109,8 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 `Outbox(bucketCount = ...)` is required and has no default: it describes the data already written, not
 a deployment, changing it re-maps every partition key. One `Outbox` instance is built at startup and
 handed to both `install()` and `OutboxPublisher`, there is no process wide state behind it.
-`batchSize` is per bucket, a sweep may publish `batchSize * bucketCount` events.
+`batchLimit` is per bucket and belongs to the `Outbox` too, a sweep may publish
+`batchLimit * bucketCount` events.
 
 ### Event Definition
 ```kotlin

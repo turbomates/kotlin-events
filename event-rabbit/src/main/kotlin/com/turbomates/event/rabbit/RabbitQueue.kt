@@ -61,6 +61,10 @@ class RabbitQueue(
     private fun channel(queueConfig: QueueConfig): Channel {
         val channel = connections.random().createChannel()
         channels.add(channel)
+        // The queues below bind to this exchange, so it has to exist before them. A consumer only
+        // application has no publisher to declare it, and the publisher of an application that has
+        // one declares it when it publishes, which may be long after the queues are bound.
+        channel.exchangeDeclare(config.exchange, BuiltinExchangeType.TOPIC, true)
         return channel.apply { queueConfig.dlxQueue() }
     }
 
