@@ -7,25 +7,17 @@ import kotlin.test.assertTrue
 class UUIDv7Test {
     @Test
     fun `carries the version and variant of the RFC`() {
-        val id = UUIDv7.randomUUID()
+        val id = uuidV7()
 
         assertEquals(7, id.version())
         assertEquals(2, id.variant())
     }
 
     @Test
-    fun `ids of later moments are bigger`() {
-        val first = UUIDv7.randomUUID()
-        Thread.sleep(2)
-        val second = UUIDv7.randomUUID()
+    fun `ids grow monotonically`() {
+        val ids = (1..10_000).map { uuidV7() }
 
-        assertTrue(first < second, "expected $first < $second")
-    }
-
-    @Test
-    fun `ids stay unique within one millisecond`() {
-        val ids = (1..10_000).map { UUIDv7.randomUUID() }
-
+        assertEquals(ids, ids.sorted(), "ids are strictly growing even within one millisecond")
         assertEquals(ids.size, ids.toSet().size)
     }
 }

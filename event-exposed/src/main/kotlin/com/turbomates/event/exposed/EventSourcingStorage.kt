@@ -1,7 +1,6 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
-import java.util.UUID
 import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -22,17 +21,6 @@ class EventSourcingStorage(
                 .where { sourcing.rootId eq aggregateRoot }
                 .orderBy(sourcing.createdAt, SortOrder.ASC)
                 .map { it[sourcing.event] }
-        }
-    }
-
-    fun add(sourced: List<EventSourcingEvent>) {
-        transaction(database) {
-            sourcing.batchInsert(sourced) { event ->
-                this[sourcing.id] = UUID.randomUUID()
-                this[sourcing.rootId] = event.rootId
-                this[sourcing.event] = event
-                this[sourcing.createdAt] = event.timestamp
-            }
         }
     }
 }

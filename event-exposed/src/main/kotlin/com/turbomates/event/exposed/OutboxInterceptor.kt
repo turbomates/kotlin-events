@@ -2,9 +2,6 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.EventStore
-import com.turbomates.event.NoOpTelemetry
-import com.turbomates.event.Telemetry
-import java.util.ServiceLoader
 import org.jetbrains.exposed.v1.core.Key
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.statements.GlobalStatementInterceptor
@@ -16,14 +13,13 @@ import org.jetbrains.exposed.v1.core.transactions.transactionScope
  * the bucket count and the serialization the application is running with.
  */
 class OutboxInterceptor(private val outbox: Outbox) : GlobalStatementInterceptor {
-    private val telemetryService: Telemetry = ServiceLoader.load(Telemetry::class.java).findFirst().orElse(NoOpTelemetry())
 
     override fun beforeCommit(transaction: Transaction) {
         save(transaction.events.raiseEvents().toList())
     }
 
     private fun save(raised: List<Event>) {
-        val events = raised.map { PublicEvent(it, traceInformation = telemetryService.traceInformation()) }
+        val events = raised.map { PublicEvent(it, traceInformation = outbox.traceInformation()) }
         outbox.batchEventsInsert(events)
     }
 }

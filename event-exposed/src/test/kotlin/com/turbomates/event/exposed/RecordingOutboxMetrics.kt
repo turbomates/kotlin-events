@@ -22,6 +22,9 @@ class RecordingOutboxMetrics : OutboxMetrics {
     @Volatile
     private var totalBuckets: Int = 0
 
+    @Volatile
+    private var depth: Long = -1
+
     override fun bucketAcquired(bucket: Int, pending: Int, lag: Duration) {
         acquired.add(bucket)
         this.pending[bucket] = pending
@@ -51,6 +54,10 @@ class RecordingOutboxMetrics : OutboxMetrics {
         sweeps.incrementAndGet()
     }
 
+    override fun outboxDepth(events: Long) {
+        depth = events
+    }
+
     fun snapshot(): Snapshot = Snapshot(
         ownedBuckets = ownedBuckets,
         totalBuckets = totalBuckets,
@@ -61,7 +68,8 @@ class RecordingOutboxMetrics : OutboxMetrics {
         failed = failed.mapValues { it.value.get() },
         skipped = skipped.mapValues { it.value.get() },
         eventFailures = eventFailures.toMap(),
-        sweeps = sweeps.get()
+        sweeps = sweeps.get(),
+        depth = depth
     )
 
     private fun ConcurrentHashMap<Int, AtomicLong>.counter(bucket: Int): AtomicLong =
@@ -77,7 +85,8 @@ class RecordingOutboxMetrics : OutboxMetrics {
         val failed: Map<Int, Long>,
         val skipped: Map<Int, Long>,
         val eventFailures: Map<UUID, Int>,
-        val sweeps: Long
+        val sweeps: Long,
+        val depth: Long
     ) {
         val maxLag: Duration get() = lag.values.maxOrNull() ?: Duration.ZERO
         val publishedTotal: Long get() = published.values.sum()

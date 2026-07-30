@@ -85,6 +85,7 @@ class OutboxPublisherTest {
         assertEquals(0L, snapshot.failedTotal)
         assertTrue(snapshot.maxLag > Duration.ZERO, "expected a non zero lag, got ${snapshot.maxLag}")
         assertTrue(snapshot.acquiredBuckets.containsAll(events.map { outbox.bucket(it.original.partitionKey, it.id) }))
+        assertEquals(0L, snapshot.depth, "the drained outbox reports an empty backlog")
     }
 
     @Test
@@ -142,6 +143,7 @@ class OutboxPublisherTest {
         assertFalse(stream[2].original.testId() in publisher.attempts, "nothing overtakes the failed head")
         assertEquals(listOf((other.original as OutboxEvent).id), publisher.published.toList())
         assertEquals(3L, unpublished())
+        assertEquals(3L, metrics.snapshot().depth, "the blocked stream stays in the backlog gauge")
         assertEquals(1, metrics.snapshot().eventFailures[head.id])
         val (attemptsMade, nextAttemptAt) = transaction(database) {
             val row = outbox.events.selectAll().first { it[outbox.events.id].value == head.id }

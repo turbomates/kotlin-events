@@ -80,6 +80,7 @@ class OutboxPublisher(
             }
         }
         metrics.sweepCompleted(owned, buckets.size)
+        metrics.outboxDepth(suspendTransaction(database) { outbox.depth() })
     }
 
     /**

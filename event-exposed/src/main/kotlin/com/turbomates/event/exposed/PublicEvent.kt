@@ -13,7 +13,7 @@ data class PublicEvent(
     @Serializable(with = EventSerializer::class)
     val original: Event,
     @Serializable(with = UUIDSerializer::class)
-    val id: UUID = UUIDv7.randomUUID(),
+    val id: UUID = uuidV7(),
     val traceInformation: TraceInformation? = null
 ) {
     @Serializable(with = LocalDateTimeSerializer::class)

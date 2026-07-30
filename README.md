@@ -207,7 +207,9 @@ OutboxPublisher(database = database, publishers = publishers, outbox = outbox)
 **Metrics:**
 
 `OutboxMetrics` reports per bucket how many buckets the worker actually holds, the age of the oldest
-unpublished event, and how many events were published, skipped or failed. It is a seam for the
+unpublished event, and how many events were published, skipped or failed. `outboxDepth` is the total
+unpublished backlog after each sweep — its slope is the drain rate, a growing value means the
+writers are ahead of the workers. It is a seam for the
 application metrics registry, nothing more, the publisher logs its own errors on its own. The default
 is `NoOpOutboxMetrics`, every method of the interface has an empty default, so an implementation only
 overrides what it exports:

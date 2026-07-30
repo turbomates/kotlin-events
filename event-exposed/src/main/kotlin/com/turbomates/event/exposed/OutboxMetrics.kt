@@ -37,6 +37,13 @@ interface OutboxMetrics {
 
     /** A full pass over every bucket is over, [ownedBuckets] of [totalBuckets] were locked by this worker. */
     fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {}
+
+    /**
+     * Unpublished events left in the whole outbox after a sweep, measured once per sweep. A gauge:
+     * its slope is the rate the workers drain the backlog at, a growing value means the writers are
+     * ahead of them. Every worker reports the same global number.
+     */
+    fun outboxDepth(events: Long) {}
 }
 
 object NoOpOutboxMetrics : OutboxMetrics

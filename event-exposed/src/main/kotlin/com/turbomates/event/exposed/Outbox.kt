@@ -1,8 +1,9 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.NoOpTelemetry
+import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.exposed.EventSerialization.Companion.DEFAULT_JSON
 import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
@@ -30,6 +31,7 @@ import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
 import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.select
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.json.jsonb
 
@@ -61,7 +63,8 @@ class Outbox(
     private val batchLimit: Int = DEFAULT_BATCH_LIMIT,
     private val bucketLock: OutboxBucketLock = PostgresAdvisoryBucketLock(),
     private val serialization: EventSerialization = EventSerialization(),
-    private val retryPolicy: OutboxRetryPolicy = OutboxRetryPolicy()
+    private val retryPolicy: OutboxRetryPolicy = OutboxRetryPolicy(),
+    private val telemetryService: Telemetry = NoOpTelemetry(),
 ) {
     init {
         require(bucketCount in 1..MAX_BUCKET_COUNT) {
@@ -97,6 +100,8 @@ class Outbox(
         return interceptor().also { JdbcTransaction.globalInterceptors.add(it) }
     }
 
+    fun traceInformation() = telemetryService.traceInformation()
+
     /**
      * Every bucket once, in the order the next sweep visits them. The call moves the outbox on: the
      * start rotates by one every time, so workers that poll in lockstep do not keep fighting over the
@@ -130,12 +135,19 @@ class Outbox(
             .withDistinct()
             .where {
                 (events.bucket eq bucket) and events.publishedAt.isNull() and
-                    (events.nextAttemptAt greater CurrentDateTime)
+                        (events.nextAttemptAt greater CurrentDateTime)
             }
             .map { it[events.partitionKey] }
         val rawEvent = events.event.castTo<String>(TextColumnType())
         val rows = events
-            .select(events.id, rawEvent, events.partitionKey, events.attempts, events.traceInformation, events.createdAt)
+            .select(
+                events.id,
+                rawEvent,
+                events.partitionKey,
+                events.attempts,
+                events.traceInformation,
+                events.createdAt
+            )
             .where {
                 val head = (events.bucket eq bucket) and events.publishedAt.isNull()
                 if (blocked.isEmpty()) head else head and (events.partitionKey notInList blocked)
@@ -145,7 +157,8 @@ class Outbox(
             .toList()
         return OutboxBatch(
             rows.map { row ->
-                val decoded = runCatching { serialization.json.decodeFromString(serialization.serializer, row[rawEvent]) }
+                val decoded =
+                    runCatching { serialization.json.decodeFromString(serialization.serializer, row[rawEvent]) }
                 OutboxBatch.Item(
                     id = row[events.id].value,
                     partitionKey = row[events.partitionKey],
@@ -186,6 +199,13 @@ class Outbox(
     fun delete(id: UUID): Boolean = events.deleteWhere { events.id eq id } > 0
 
     /**
+     * Unpublished rows of the whole outbox, the backlog the workers are draining. A count over the
+     * partial bucket index, so it stays cheap even when the backlog is deep. Call it inside a
+     * transaction.
+     */
+    fun depth(): Long = events.selectAll().where { events.publishedAt.isNull() }.count()
+
+    /**
      * Writes [raised] to the outbox, and the ones that are event sourced to the event sourcing table.
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
@@ -200,7 +220,7 @@ class Outbox(
             this[events.traceInformation] = event.traceInformation
         }
         eventSourcing.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
-            this[eventSourcing.id] = UUIDv7.randomUUID()
+            this[eventSourcing.id] = uuidV7()
             this[eventSourcing.rootId] = event.rootId
             this[eventSourcing.event] = event
             this[eventSourcing.createdAt] = event.timestamp
