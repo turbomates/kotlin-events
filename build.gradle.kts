@@ -30,6 +30,14 @@ allprojects {
     tasks.withType(io.gitlab.arturbosch.detekt.Detekt::class).configureEach {
         jvmTarget = "21"
     }
+    // detekt 1.23 runs inside the gradle daemon and its embedded compiler throws on a
+    // java.version of 25, so `build` on the project toolchain would always fail. detekt
+    // is run on its own, on a jdk of 24, by the reviewdog workflow — keep it out of `check`
+    plugins.withId("io.gitlab.arturbosch.detekt") {
+        tasks.named("check") {
+            setDependsOn(dependsOn.filterNot { it is TaskProvider<*> && it.name == "detekt" })
+        }
+    }
 }
 
 

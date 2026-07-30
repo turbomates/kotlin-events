@@ -164,7 +164,11 @@ val outboxPublisher = OutboxPublisher(database, publishers, Outbox(bucketCount =
 
 - Static analysis: detekt with configuration in `detekt.yml`
 - Formatting enforced via detekt-formatting plugin
-- PR checks run via reviewdog GitHub Action
+- detekt 1.23 runs inside the gradle daemon and its embedded compiler throws on a `java.version`
+  of 25, so the detekt tasks need a daemon on a JDK of 24 or older
+  (`./gradlew detekt -Dorg.gradle.java.home=<jdk24>`). For that reason `check` does not depend on
+  `detekt` and `./gradlew build` does not lint
+- PR checks run via reviewdog GitHub Action, that job pins JDK 24
 - Max issues set to 100000 in CI (via `yq -i '.build.maxIssues = 100000' detekt.yml`)
 
 ## Build Configuration
