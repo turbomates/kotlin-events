@@ -39,8 +39,9 @@ interface OutboxMetrics {
     fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {}
 
     /**
-     * Unpublished events left in the whole outbox after a sweep, measured once per sweep. A gauge:
-     * its slope is the rate the workers drain the backlog at, a growing value means the writers are
+     * Unpublished events in the whole outbox, measured on a ticker of its own (`depthInterval` of
+     * the publisher), so the gauge stays fresh even while a sweep drowns in a deep backlog. Its
+     * slope is the rate the workers drain the backlog at, a growing value means the writers are
      * ahead of them. Every worker reports the same global number.
      */
     fun outboxDepth(events: Long) {}

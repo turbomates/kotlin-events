@@ -31,18 +31,22 @@ import org.slf4j.LoggerFactory
  * nine. A failed event stays in the table with one more attempt counted and a backoff before the
  * next one (see [OutboxRetryPolicy]), and until that backoff runs out its whole stream waits with
  * it — nothing is published out of order with its partition, the other streams of the bucket
- * continue. A worker therefore uses two connections while it publishes a bucket, the pool has to
- * have room for them.
+ * continue. A worker therefore uses two connections while it publishes a bucket, plus a short
+ * third one every [depthInterval] for the backlog gauge, the pool has to have room for them.
  *
  * @param outbox the same outbox the interceptor of this application writes to, it carries the
  * buckets, the batch limit, the bucket lock and the serialization of the rows.
  * @param delay pause between two sweeps.
+ * @param depthInterval how often [OutboxMetrics.outboxDepth] is measured. Its own ticker, not a part
+ * of the sweep: a sweep drowning in a deep backlog can take tens of seconds, and that is exactly
+ * when the gauge has to stay fresh.
  */
 class OutboxPublisher(
     private val database: Database,
     private val publishers: List<Publisher>,
     private val outbox: Outbox,
     private val delay: Duration = Duration.parse("1s"),
+    private val depthInterval: Duration = Duration.parse("10s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val metrics: OutboxMetrics = NoOpOutboxMetrics
 ) : CoroutineScope by CoroutineScope(dispatcher) {
@@ -50,6 +54,18 @@ class OutboxPublisher(
 
     fun start(): Job {
         return launch {
+            launch {
+                while (isActive) {
+                    try {
+                        metrics.outboxDepth(suspendTransaction(database) { outbox.depth() })
+                    } catch (cancel: CancellationException) {
+                        throw cancel
+                    } catch (ignore: Throwable) {
+                        logger.error("error while measuring the outbox depth", ignore)
+                    }
+                    delay(depthInterval)
+                }
+            }
             while (isActive) {
                 try {
                     sweep()
@@ -80,7 +96,6 @@ class OutboxPublisher(
             }
         }
         metrics.sweepCompleted(owned, buckets.size)
-        metrics.outboxDepth(suspendTransaction(database) { outbox.depth() })
     }
 
     /**

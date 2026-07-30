@@ -74,8 +74,13 @@ class OutboxPublisherTest {
         val publisher = CollectingPublisher()
         val metrics = RecordingOutboxMetrics()
 
-        val job = OutboxPublisher(database, listOf(publisher), outbox, delay = POLL_DELAY, metrics = metrics).start()
-        awaitUntil { unpublished() == 0L && metrics.snapshot().sweeps > 0 }
+        val job = OutboxPublisher(
+            database, listOf(publisher), outbox,
+            delay = POLL_DELAY, depthInterval = POLL_DELAY, metrics = metrics
+        ).start()
+        awaitUntil {
+            unpublished() == 0L && metrics.snapshot().let { it.sweeps > 0 && it.depth == 0L }
+        }
         job.cancelAndJoin()
 
         assertEquals(events.size, publisher.published.size)
@@ -130,11 +135,14 @@ class OutboxPublisherTest {
         val metrics = RecordingOutboxMetrics()
         val retrying = Outbox(TEST_BUCKET_COUNT, retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours))
 
-        val job = OutboxPublisher(database, listOf(publisher), retrying, delay = POLL_DELAY, metrics = metrics).start()
+        val job = OutboxPublisher(
+            database, listOf(publisher), retrying,
+            delay = POLL_DELAY, depthInterval = POLL_DELAY, metrics = metrics
+        ).start()
         awaitUntil {
             val snapshot = metrics.snapshot()
             (other.original as OutboxEvent).id in publisher.published &&
-                snapshot.eventFailures.isNotEmpty() && snapshot.sweeps >= 10
+                snapshot.eventFailures.isNotEmpty() && snapshot.sweeps >= 10 && snapshot.depth == 3L
         }
         job.cancelAndJoin()
 

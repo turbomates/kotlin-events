@@ -63,7 +63,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
-- `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, per-event failures, total outbox depth per sweep, for the application registry (default `NoOpOutboxMetrics`)
+- `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, per-event failures, total outbox depth on its own ticker, for the application registry (default `NoOpOutboxMetrics`)
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
 - `EventSerialization`: `Json` and `KSerializer<Event>` of the jsonb columns, carried by the `Outbox`
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, partition_key, database-assigned sequence, attempts, next_attempt_at, trace_information, published_at)
