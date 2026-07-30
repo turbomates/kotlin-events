@@ -2,45 +2,26 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.EventStore
-import com.turbomates.event.NoOpTelemetry
-import com.turbomates.event.Telemetry
-import java.util.ServiceLoader
-import java.util.UUID
 import org.jetbrains.exposed.v1.core.Key
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.statements.GlobalStatementInterceptor
 import org.jetbrains.exposed.v1.core.transactions.transactionScope
-import org.jetbrains.exposed.v1.jdbc.batchInsert
 
-class OutboxInterceptor : GlobalStatementInterceptor {
-    private val telemetryService: Telemetry = ServiceLoader.load(Telemetry::class.java).findFirst().orElse(NoOpTelemetry())
+/**
+ * Writes the events raised in a transaction to the outbox of [outbox], in the same transaction as the
+ * business data. Register it with [Outbox.install], it is not picked up by a service loader: it needs
+ * the bucket count and the serialization the application is running with.
+ */
+class OutboxInterceptor(private val outbox: Outbox) : GlobalStatementInterceptor {
 
     override fun beforeCommit(transaction: Transaction) {
-        val events = transaction.events.raiseEvents().toList()
-        events.save(telemetryService)
+        save(transaction.events.raiseEvents().toList())
+    }
+
+    private fun save(raised: List<Event>) {
+        val events = raised.map { PublicEvent(it, traceInformation = outbox.traceInformation()) }
+        outbox.batchEventsInsert(events)
     }
 }
 
 val Transaction.events: EventStore by transactionScope { getOrCreate(Key()) { EventStore() } }
-
-fun List<Event>.save(telemetryService: Telemetry) {
-    val events = this.map {
-        PublicEvent(
-            it,
-            traceInformation = telemetryService.traceInformation()
-        )
-    }
-    EventsTable.batchInsert(events) { event ->
-        this[EventsTable.id] = event.id
-        this[EventsTable.event] = event.original
-        this[EventsTable.createdAt] = event.createdAt
-        this[EventsTable.traceInformation] = event.traceInformation
-    }
-    val eventSourcingEvents = this.filterIsInstance<EventSourcingEvent>()
-    EventSourcingTable.batchInsert(eventSourcingEvents) { event ->
-        this[EventSourcingTable.id] = UUID.randomUUID()
-        this[EventSourcingTable.rootId] = event.rootId
-        this[EventSourcingTable.event] = event
-        this[EventSourcingTable.createdAt] = event.timestamp
-    }
-}

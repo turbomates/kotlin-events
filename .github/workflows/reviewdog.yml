@@ -17,6 +17,7 @@ jobs:
       - uses: actions/setup-java@v3
         with:
           distribution: 'adopt'
+          # detekt 1.23 can not run on a JDK newer than 24, only this job stays behind
           java-version: '24'
           cache: 'gradle'
       - uses: reviewdog/action-setup@v1

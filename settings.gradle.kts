@@ -10,24 +10,24 @@ include(":event-telemetry-opentelemetry")
 
 pluginManagement {
     plugins {
-        id("org.jetbrains.kotlin.jvm") version "2.3.0"
+        id("org.jetbrains.kotlin.jvm") version "2.4.10"
     }
 }
 dependencyResolutionManagement {
     versionCatalogs {
         create("deps") {
-            version("detekt", "1.23.6")
-            version("kotlin", "2.3.0")
+            version("detekt", "1.23.8")
+            version("kotlin", "2.4.10")
             version("test_logger", "4.0.0")
             version("kotlin_serialization_json", "1.11.0")
-            version("slf4j", "2.0.17")
-            version("exposed", "1.2.0")
-            version("postgresql_jdbc", "42.7.8")
-            version("rabbitmq_amqp_client", "5.27.0")
-            version("coroutines", "1.10.1")
-            version("testcontainers", "1.21.3")
+            version("slf4j", "2.0.18")
+            version("exposed", "1.3.1")
+            version("postgresql_jdbc", "42.7.13")
+            version("rabbitmq_amqp_client", "5.34.0")
+            version("coroutines", "1.11.0")
+            version("testcontainers", "1.21.4")
             version("nexus_staging", "2.0.0")
-            version("opentelemetry", "1.55.0")
+            version("opentelemetry", "1.64.0")
 
             library("exposed_time", "org.jetbrains.exposed", "exposed-java-time").versionRef("exposed")
             library("exposed_core", "org.jetbrains.exposed", "exposed-core").versionRef("exposed")

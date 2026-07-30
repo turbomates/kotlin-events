@@ -6,6 +6,8 @@ A Kotlin library for building event-driven architectures with support for transa
 
 - **Event-Driven Architecture**: Type-safe event publishing and subscription with Kotlin coroutines
 - **Transactional Outbox Pattern**: Ensure atomicity between business data and event publishing
+- **Partitioned Outbox**: Events are spread over buckets so several workers publish in parallel while
+  events of one partition key stay in order
 - **RabbitMQ Integration**: Distributed event messaging with automatic retry and dead-letter queue handling
 - **Distributed Tracing**: OpenTelemetry integration with W3C trace context propagation
 - **Event Sourcing**: Built-in support for event sourcing patterns
@@ -48,6 +50,26 @@ class OrderCreated(
     companion object : Key<OrderCreated>
 }
 ```
+
+An event can name the stream it belongs to with `partitionKey`. The outbox keeps events of one
+partition key in the same bucket, so they are published by one worker, in order, while other buckets
+are published in parallel. Override it with a getter, the property is `@Transient` and never reaches
+the payload:
+
+```kotlin
+@Serializable
+data class AccountTransactionApplied(
+    @Serializable(with = UUIDSerializer::class) val id: UUID,
+    @Serializable(with = UUIDSerializer::class) val userId: UUID
+) : Event() {
+    override val key get() = Companion
+    override val partitionKey get() = userId
+
+    companion object : Key<AccountTransactionApplied>
+}
+```
+
+Events without a partition key fall back to their own outbox id and spread evenly over the buckets.
 
 ### 2. Create a Subscriber
 
@@ -116,8 +138,12 @@ val database = Database.connect(
     password = "password"
 )
 
-// Register global interceptor
-GlobalStatementInterceptor.register(OutboxInterceptor())
+// Describe the outbox and register its interceptor for every transaction
+val outbox = Outbox(
+    bucketCount = 16,
+    batchLimit = 100                     // events per bucket, not per sweep
+)
+outbox.install()
 
 // Start outbox publisher
 val publishers = listOf(
@@ -128,8 +154,8 @@ val publishers = listOf(
 val outboxPublisher = OutboxPublisher(
     database = database,
     publishers = publishers,
-    batchSize = 100,
-    delay = 1000L // Poll every 1 second
+    outbox = outbox,
+    delay = Duration.parse("1s")         // pause between sweeps
 )
 
 outboxPublisher.start()
@@ -138,9 +164,157 @@ outboxPublisher.start()
 **How it works:**
 
 1. Events are persisted to the database in the same transaction as your business data
-2. A background worker polls unpublished events
-3. Events are published to all configured publishers
-4. Ensures no events are lost even if the application crashes
+2. Every row gets a `bucket`, derived from the event `partitionKey` or from the row id
+3. A background worker sweeps the buckets one by one, starting at a rotating position
+4. A bucket is taken with a non blocking lock and held for the whole batch, buckets held by another
+   worker are skipped
+5. Every event is published in its own transaction, which deletes the row first and commits after the
+   publishers are done, so a failure costs one redelivery and never the whole batch
+6. Ensures no events are lost even if the application crashes
+
+**Buckets:**
+
+`Outbox(bucketCount)` is required and has no default. It describes the rows already written to
+`outbox_events`, not a deployment: changing it re-maps every partition key, so events of one stream
+would sit in two buckets at once and could be published by two workers in parallel. Pick it once, keep
+it in code next to the other constants of the application, and change it only by draining the outbox
+first. Every process of the application builds its `Outbox` with the same count, and the one instance
+is handed to both `install()` and the publisher.
+
+`batchLimit` is per bucket: a sweep publishes up to `batchLimit * bucketCount` events. It only bounds
+how much one worker takes from a bucket per sweep, the publishing transaction stays one event wide.
+It belongs to the `Outbox` together with the bucket count, the publisher only decides how often it
+sweeps.
+
+**Several workers:**
+
+Buckets are locked with `pg_try_advisory_xact_lock`. The lock is taken by a transaction that does
+nothing but hold it for the batch, and the database releases it when that transaction ends, so a
+crashed worker never blocks its bucket. The events themselves are published in transactions of their
+own, which means a worker holds two connections while it works on a bucket, plan the pool for it. Advisory locks are a Postgres feature, other
+databases can plug their own implementation of `OutboxBucketLock` (or use `SingleWorkerBucketLock`
+when a single worker publishes the outbox):
+
+```kotlin
+val outbox = Outbox(
+    bucketCount = 16,
+    bucketLock = PostgresAdvisoryBucketLock(namespace = 42)
+)
+
+OutboxPublisher(database = database, publishers = publishers, outbox = outbox)
+```
+
+**Metrics:**
+
+`OutboxMetrics` reports per bucket how many buckets the worker actually holds, the age of the oldest
+unpublished event, and how many events were published, skipped or failed. `outboxDepth` is the total
+unpublished backlog, measured on its own ticker (`depthInterval` of the publisher, 10s by default)
+so it stays fresh even while a sweep drowns in a deep backlog — its slope is the drain rate, a
+growing value means the writers are ahead of the workers. It is a seam for the
+application metrics registry, nothing more, the publisher logs its own errors on its own. The default
+is `NoOpOutboxMetrics`, every method of the interface has an empty default, so an implementation only
+overrides what it exports:
+
+```kotlin
+class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetrics {
+    override fun bucketAcquired(bucket: Int, pending: Int, lag: Duration) {
+        registry.gauge("outbox.lag.seconds", listOf(Tag.of("bucket", bucket.toString())), lag.inWholeSeconds)
+    }
+
+    override fun sweepCompleted(ownedBuckets: Int, totalBuckets: Int) {
+        registry.gauge("outbox.buckets.owned", ownedBuckets)
+    }
+}
+```
+
+**Failing events, backoff and order:**
+
+A publisher that throws rolls the deletion of the row back, so the event is never lost — but it is
+not hammered either. Every failure increments `attempts` and sets `next_attempt_at` to
+`now() + backoff` (database time), and until that moment the whole stream of the event is skipped by
+the sweeps: nothing is published out of order with its partition, the other streams of the bucket
+continue. The same applies to a row that can no longer be decoded — an unknown event type
+mid-rollout, for example — it costs one failed attempt of its own stream, not the bucket.
+
+The backoff is exponential and belongs to the `Outbox`:
+
+```kotlin
+val outbox = Outbox(
+    bucketCount = 16,
+    retryPolicy = OutboxRetryPolicy(
+        initialDelay = 1.seconds, // attempt N waits initialDelay * multiplier^(N-1)
+        multiplier = 2.0,
+        maxDelay = 5.minutes
+    )
+)
+```
+
+There is no attempt limit and no dead-letter table on purpose: giving an event up would silently
+break the order of its stream, and that is a decision the application has to make, not the library.
+A poison event is almost always a bug — a subscriber that chokes on the data, a serializer that lost
+a type — and once the fix is deployed the event publishes on the next try and its stream drains
+itself, in order, with no manual repair. Alert on `OutboxMetrics.eventFailed` (its `attempts` keeps
+growing while nobody looks); the truly unrecoverable row is removed by hand:
+`DELETE FROM outbox_events WHERE id = '...'`, which releases its stream.
+
+Events are published in the order they were raised: the order inside a transaction is kept by the
+`EventStore`, the order in the table by the database-assigned `sequence` column — client timestamps
+are neither unique nor monotonic across pods, so they are data, not ordering.
+
+**Custom serialization:**
+
+The format of the `jsonb` columns comes with the outbox, build the `Json` on top of
+`EventSerialization.DEFAULT_JSON` to add a serializers module of your own, for example contextual
+serializers of the value types the events carry, and keep the flags the existing rows were written
+with:
+
+```kotlin
+val serialization = EventSerialization(
+    Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domainSerializers }
+)
+
+val outbox = Outbox(bucketCount = 16, serialization = serialization)
+val storage = EventSourcingStorage(database, serialization)
+```
+
+The `Outbox` keeps its serialization to itself, so build the `EventSerialization` once and hand the
+same instance to everything that reads those columns.
+
+The second parameter of `EventSerialization` is the `KSerializer<Event>` that decides what a row looks
+like, by default `EventSerializer` and its `{"type": <class>, "body": {...}}`. A table that already
+holds rows can only be read back by a serializer that understands them, so replacing it is a
+migration, not a setting.
+
+**Schema:**
+
+`event-exposed` ships `outbox_events_postgres_table.sql` for a new database. One that already runs
+the released schema is migrated with (16 is the `bucketCount` the application is built with):
+
+```sql
+ALTER TABLE outbox_events ADD COLUMN IF NOT EXISTS bucket integer;
+-- 16 is the bucketCount the application is built with
+UPDATE outbox_events SET bucket = mod(abs(hashtext(id::text)), 16) WHERE bucket IS NULL;
+ALTER TABLE outbox_events ALTER COLUMN bucket SET NOT NULL;
+
+ALTER TABLE outbox_events ADD COLUMN partition_key uuid;
+UPDATE outbox_events SET partition_key = id WHERE partition_key IS NULL;
+ALTER TABLE outbox_events ALTER COLUMN partition_key SET NOT NULL;
+
+ALTER TABLE outbox_events ADD COLUMN sequence bigint GENERATED ALWAYS AS IDENTITY;
+ALTER TABLE outbox_events ADD COLUMN attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE outbox_events ADD COLUMN next_attempt_at timestamp with time zone;
+
+DROP INDEX IF EXISTS events_publisshed_idx;
+DROP INDEX IF EXISTS outbox_events_bucket_idx;
+CREATE INDEX outbox_events_bucket_idx ON outbox_events (bucket, sequence) WHERE published_at IS NULL;
+CREATE INDEX outbox_events_blocked_idx ON outbox_events (bucket, partition_key) WHERE next_attempt_at IS NOT NULL;
+```
+
+Run it on a drained outbox. The backfills only approximate what the new build writes — the real
+partition key of an old row was never persisted: backfilled rows are spread over the buckets by
+their id and every old row becomes a stream of its own, so a backlog left in the table may replay
+out of order once (the identity column also numbers the existing rows in arbitrary order). The rows
+written by the new build get their real partition keys from the first insert.
 
 **Event Sourcing:**
 
@@ -277,8 +451,9 @@ fun main() = runBlocking {
     )
 
     // Outbox
-    GlobalStatementInterceptor.register(OutboxInterceptor())
-    val outboxPublisher = OutboxPublisher(database, publishers)
+    val outbox = Outbox(bucketCount = 16)
+    outbox.install()
+    val outboxPublisher = OutboxPublisher(database, publishers, outbox)
     outboxPublisher.start()
 
     // Consumer
@@ -340,7 +515,7 @@ fun main() = runBlocking {
 ## Requirements
 
 - Kotlin 2.2.20+
-- Java 21+
+- Java 25+
 - PostgreSQL (for event-exposed module)
 - RabbitMQ (for event-rabbit module)
 
