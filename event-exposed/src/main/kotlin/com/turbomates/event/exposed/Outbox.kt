@@ -199,9 +199,10 @@ class Outbox(
     fun delete(id: UUID): Boolean = events.deleteWhere { events.id eq id } > 0
 
     /**
-     * Unpublished rows of the whole outbox, the backlog the workers are draining. A count over the
-     * partial bucket index, so it stays cheap even when the backlog is deep. Call it inside a
-     * transaction.
+     * Unpublished rows of the whole outbox, the backlog the workers are draining. Published rows
+     * are deleted, so this counts a table that stays small in a healthy system — microseconds; a
+     * deep backlog of hundreds of thousands of rows counts in low tens of milliseconds, once per
+     * sweep. Call it inside a transaction.
      */
     fun depth(): Long = events.selectAll().where { events.publishedAt.isNull() }.count()
 
