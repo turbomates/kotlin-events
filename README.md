@@ -382,6 +382,56 @@ queue.consume()
 - Messages are redelivered up to `maxRetries` times
 - After max retries, messages move to a parking lot queue for manual review
 
+**Consumer metrics:**
+
+`OutboxMetrics` measures the publishing end, `ConsumerMetrics` the other one: what the queue actually
+did with a delivery. It is the same kind of seam — a `NoOpConsumerMetrics` default, every method with
+an empty body, so an implementation only overrides what it exports — and it is passed to the queue,
+not to a global registry:
+
+```kotlin
+val queue = RabbitQueue(
+    config,
+    json,
+    registry,
+    scope = applicationScope,
+    telemetryService = telemetry,
+    metrics = PrometheusConsumerMetrics(meterRegistry)
+)
+```
+
+```kotlin
+class PrometheusConsumerMetrics(private val registry: MeterRegistry) : ConsumerMetrics {
+    override fun handled(queue: String, routingKey: String, waited: Duration, took: Duration) {
+        registry.timer("rabbit.consumer.took", "queue", queue).record(took.toJavaDuration())
+        registry.timer("rabbit.consumer.waited", "queue", queue).record(waited.toJavaDuration())
+    }
+
+    override fun parked(queue: String, routingKey: String, retries: Long) {
+        registry.counter("rabbit.consumer.parked", "queue", queue).increment()
+    }
+}
+```
+
+Both label sets are bounded — the queue name and the routing key of the event, nothing per message.
+
+`handled` splits the delay the consumer adds by itself (`waited`) from the work (`took`), so a queue
+starved of workers looks different from a slow subscriber. That wait is worth watching, because the
+broker can not show it: it hands over up to `prefetchCount` messages at once and they queue in memory
+until one of `maxConcurrency` workers is free, counting as unacked on the broker's side — the queue
+looks empty there while the backlog sits in the process.
+
+`failed` is followed by exactly one of `retried`, `parked` or `requeued`, which tells what happened to
+the delivery. `noSubscriber` counts messages routed to a queue whose consumer has no subscriber for
+their key — they are acked and dropped, and this is the only trace they leave.
+
+Alert on `parked`: the retries are over, the message is in the `_pl` queue and nothing takes it out
+but a human.
+
+Implementations are expected not to throw — they sit next to the ack of the delivery, `handled` right
+between it and the subscriber — but one that does costs nothing but a log line: the callback catches
+it and settles the delivery as if the metric had returned.
+
 ### event-telemetry-opentelemetry (Distributed Tracing)
 
 OpenTelemetry implementation for distributed tracing across services.

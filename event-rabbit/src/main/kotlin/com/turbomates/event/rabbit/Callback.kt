@@ -9,6 +9,9 @@ import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import com.turbomates.event.seriazlier.EventSerializer
+import kotlin.time.Duration
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -23,6 +26,7 @@ internal class ListenerDeliveryCallback(
     private val json: Json,
     private val telemetryService: Telemetry,
     private val scope: CoroutineScope,
+    private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
     private val errorHandler: (Throwable) -> Unit = {}
 ) : DeliverCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
@@ -30,7 +34,7 @@ internal class ListenerDeliveryCallback(
     // Unbounded from the channel's side, but the broker never delivers more than
     // prefetchCount unacked messages, so at most prefetchCount deliveries ever sit
     // in the buffer waiting for a free worker. trySend therefore never rejects.
-    private val deliveries = Channel<Delivery>(Channel.UNLIMITED)
+    private val deliveries = Channel<Buffered>(Channel.UNLIMITED)
 
     init {
         // One worker per unit of concurrency: a subscriber processes at most
@@ -39,8 +43,9 @@ internal class ListenerDeliveryCallback(
         repeat(config.maxConcurrency) {
             scope.launch {
                 for (delivery in deliveries) {
+                    val waited = delivery.enqueuedAt.elapsedNow()
                     try {
-                        process(delivery)
+                        process(delivery.message, waited)
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (expected: Throwable) {
@@ -55,11 +60,12 @@ internal class ListenerDeliveryCallback(
     override fun handle(consumerTag: String, message: Delivery) {
         // Never suspends, never rejects: the delivery is buffered and waits in the
         // channel until one of the maxConcurrency workers is free to process it.
-        deliveries.trySend(message)
+        // The mark it carries is what ConsumerMetrics reports as `waited`.
+        deliveries.trySend(Buffered(message, TimeSource.Monotonic.markNow()))
     }
 
     @Suppress("UNCHECKED_CAST")
-    private suspend fun process(message: Delivery) {
+    private suspend fun process(message: Delivery, waited: Duration) {
         val carrier = message.properties.headers ?: emptyMap()
         val traceInformation = TraceInformation(
             carrier[QueueConfig.TRACEPARENT_HEADER] as? String,
@@ -74,21 +80,33 @@ internal class ListenerDeliveryCallback(
             "messaging.rabbitmq.queue" to config.queueName,
             "messaging.broker" to "rabbitmq",
         )
-        telemetryService.link(traceInformation, "rabbit.worker", attributes) {
+        val queue = config.queueName
+        val routingKey = message.envelope.routingKey
+        val retries = message.properties.retryCount()
+        telemetryService.link(traceInformation, "kotlin.event.rabbit.worker", attributes) {
             val eventJsonString = String(message.body)
+            val startedAt = TimeSource.Monotonic.markNow()
             try {
                 logger.info("Event $eventJsonString accepted ")
                 val event = json.decodeFromString(EventSerializer, eventJsonString)
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
-                callback?.invoke(event)
+                if (callback == null) {
+                    // The queue is bound to a key this consumer has no subscriber for: the delivery
+                    // is acked and gone, and the metric is the only trace it leaves.
+                    report { metrics.noSubscriber(queue, routingKey) }
+                } else {
+                    callback.invoke(event)
+                    report { metrics.handled(queue, routingKey, waited, startedAt.elapsedNow()) }
+                }
                 channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (expected: Throwable) {
                 logger.error("Broken event: $eventJsonString. Message: ${expected.message}", expected)
+                report { metrics.failed(queue, routingKey, retries, startedAt.elapsedNow(), expected) }
                 with(channelInfo) {
                     if (config.isRetryEnabled()) {
-                        if (message.properties.retryCount() >= config.maxRetries) {
+                        if (retries >= config.maxRetries) {
                             logger.error(
                                 "Couldn't process message after ${config.maxRetries} retries: $eventJsonString",
                                 expected
@@ -100,17 +118,39 @@ internal class ListenerDeliveryCallback(
                                 message.body
                             )
                             channel.basicAck(message.envelope.deliveryTag, false)
+                            report { metrics.parked(queue, routingKey, retries) }
                         } else {
                             channel.basicReject(message.envelope.deliveryTag, false)
+                            report { metrics.retried(queue, routingKey, retries) }
                         }
                     } else {
                         channel.basicNack(message.envelope.deliveryTag, false, true)
+                        report { metrics.requeued(queue, routingKey) }
                     }
                 }
                 errorHandler(expected)
             }
         }
     }
+
+    /**
+     * [ConsumerMetrics] is documented as never throwing, but a broken implementation of it must not
+     * be able to decide the fate of a delivery. A throw between the subscriber and the ack would
+     * redeliver a message that was already processed, and a throw on the failure path would leave
+     * the delivery unacked — holding its prefetch slot until the channel is closed — because it
+     * escapes before the reject.
+     */
+    private inline fun report(metric: () -> Unit) {
+        try {
+            metric()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (broken: Throwable) {
+            logger.error("ConsumerMetrics of ${config.queueName} threw", broken)
+        }
+    }
+
+    private class Buffered(val message: Delivery, val enqueuedAt: TimeMark)
 
     private fun AMQP.BasicProperties.withExceptionInfo(exception: Throwable): AMQP.BasicProperties {
         val exceptionMessage = (exception.cause?.message ?: exception.message)?.truncateTo(maxHeaderSize)
