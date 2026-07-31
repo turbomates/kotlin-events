@@ -57,7 +57,12 @@ class ConsumerMetricsTest {
             metrics = metrics
         )
         queue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 3, retryDelay = 1.seconds)))
-        RabbitPublisher(Config(factory, "test", "test"), Json).publish(TestEvent("test"))
+val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+try {
+    publisher.publish(TestEvent("test"))
+} finally {
+    publisher.close()
+}
 
         withTimeout(TIMEOUT) {
             while (metrics.handled.isEmpty()) {
