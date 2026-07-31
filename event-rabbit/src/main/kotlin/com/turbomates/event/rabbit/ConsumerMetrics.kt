@@ -6,7 +6,7 @@ import kotlin.time.Duration
  * Observability of the consumer side, for the application to wire into its own metrics registry.
  * The publisher of an event is measured by the outbox, this is the other end: what a queue actually
  * did with the delivery — how long it waited for a free worker ([handled] `waited`), how long the
- * subscriber ran ([handled] `took`), and every way a delivery can end other than an ack ([failed],
+ * subscriber ran ([handled] `took`), and every outcome other than a successful handled ack ([failed],
  * [retried], [parked], [requeued], [noSubscriber]).
  *
  * The two signals nothing else reports are [handled]'s `waited` and [parked]. `waited` is the delay
