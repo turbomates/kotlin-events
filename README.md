@@ -428,8 +428,9 @@ their key — they are acked and dropped, and this is the only trace they leave.
 Alert on `parked`: the retries are over, the message is in the `_pl` queue and nothing takes it out
 but a human.
 
-Implementations must not throw — `handled` is called between the subscriber and the ack, so an
-exception there costs a redelivery of a message that was already processed.
+Implementations are expected not to throw — they sit next to the ack of the delivery, `handled` right
+between it and the subscriber — but one that does costs nothing but a log line: the callback catches
+it and settles the delivery as if the metric had returned.
 
 ### event-telemetry-opentelemetry (Distributed Tracing)
 

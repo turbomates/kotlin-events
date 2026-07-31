@@ -93,17 +93,17 @@ internal class ListenerDeliveryCallback(
                 if (callback == null) {
                     // The queue is bound to a key this consumer has no subscriber for: the delivery
                     // is acked and gone, and the metric is the only trace it leaves.
-                    metrics.noSubscriber(queue, routingKey)
+                    report { metrics.noSubscriber(queue, routingKey) }
                 } else {
                     callback.invoke(event)
-                    metrics.handled(queue, routingKey, waited, startedAt.elapsedNow())
+                    report { metrics.handled(queue, routingKey, waited, startedAt.elapsedNow()) }
                 }
                 channelInfo.channel.basicAck(message.envelope.deliveryTag, false)
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (expected: Throwable) {
                 logger.error("Broken event: $eventJsonString. Message: ${expected.message}", expected)
-                metrics.failed(queue, routingKey, retries, startedAt.elapsedNow(), expected)
+                report { metrics.failed(queue, routingKey, retries, startedAt.elapsedNow(), expected) }
                 with(channelInfo) {
                     if (config.isRetryEnabled()) {
                         if (retries >= config.maxRetries) {
@@ -118,18 +118,35 @@ internal class ListenerDeliveryCallback(
                                 message.body
                             )
                             channel.basicAck(message.envelope.deliveryTag, false)
-                            metrics.parked(queue, routingKey, retries)
+                            report { metrics.parked(queue, routingKey, retries) }
                         } else {
                             channel.basicReject(message.envelope.deliveryTag, false)
-                            metrics.retried(queue, routingKey, retries)
+                            report { metrics.retried(queue, routingKey, retries) }
                         }
                     } else {
                         channel.basicNack(message.envelope.deliveryTag, false, true)
-                        metrics.requeued(queue, routingKey)
+                        report { metrics.requeued(queue, routingKey) }
                     }
                 }
                 errorHandler(expected)
             }
+        }
+    }
+
+    /**
+     * [ConsumerMetrics] is documented as never throwing, but a broken implementation of it must not
+     * be able to decide the fate of a delivery. A throw between the subscriber and the ack would
+     * redeliver a message that was already processed, and a throw on the failure path would leave
+     * the delivery unacked — holding its prefetch slot until the channel is closed — because it
+     * escapes before the reject.
+     */
+    private inline fun report(metric: () -> Unit) {
+        try {
+            metric()
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (broken: Throwable) {
+            logger.error("ConsumerMetrics of ${config.queueName} threw", broken)
         }
     }
 

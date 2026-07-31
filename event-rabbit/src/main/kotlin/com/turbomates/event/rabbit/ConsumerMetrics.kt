@@ -19,8 +19,9 @@ import kotlin.time.Duration
  * Every method has an empty default, so an implementation only overrides what it exports. The
  * callback logs its own errors and calls `errorHandler`, this interface is not a logging hook.
  *
- * Implementations must not throw: [handled] is called between the subscriber and the ack of the
- * delivery, so an exception there costs a redelivery of a message that was already processed.
+ * Implementations are expected not to throw — they sit next to the ack of the delivery, [handled]
+ * right between it and the subscriber — but one that does costs nothing but a log line: the callback
+ * catches it and settles the delivery as if the metric had returned.
  */
 interface ConsumerMetrics {
     /**

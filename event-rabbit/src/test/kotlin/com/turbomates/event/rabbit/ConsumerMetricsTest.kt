@@ -8,6 +8,7 @@ import com.turbomates.event.NoOpTelemetry
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.subscriber
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -79,6 +80,41 @@ try {
         assertTrue(handled.waited >= Duration.ZERO)
         assertTrue(handled.took >= Duration.ZERO)
         assertTrue(metrics.failed.isEmpty())
+    }
+
+    @Test
+    fun `a metrics implementation that throws does not redeliver the message`() = runBlocking {
+        val registry = SubscribersRegistry()
+        val handled = AtomicInteger()
+        val subscriber = subscriber("sportsbook.CountingSubscriber") { handled.incrementAndGet() }
+        registry.registry(subscriber)
+        val broken = object : ConsumerMetrics {
+            override fun handled(queue: String, routingKey: String, waited: Duration, took: Duration) {
+                throw IllegalStateException("broken registry")
+            }
+        }
+        val queue = RabbitQueue(
+            Config(factory, "test", "test"),
+            Json,
+            registry,
+            scope = this,
+            telemetryService = NoOpTelemetry(),
+            metrics = broken
+        )
+        queue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 3, retryDelay = 1.seconds)))
+        RabbitPublisher(Config(factory, "test", "test"), Json).publish(TestEvent("test"))
+
+        withTimeout(TIMEOUT) {
+            while (handled.get() == 0) {
+                delay(POLL)
+            }
+        }
+        // The metric throws between the subscriber and the ack: if it decided the fate of the
+        // delivery, the message would be rejected and come back through the retry queue.
+        delay(4.seconds)
+        queue.close()
+
+        assertEquals(1, handled.get())
     }
 
     @Test
