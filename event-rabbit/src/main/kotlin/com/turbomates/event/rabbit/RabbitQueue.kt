@@ -20,6 +20,7 @@ class RabbitQueue(
     private val scope: CoroutineScope,
     private val telemetryService: Telemetry,
     private val queueType: QueueType? = null,
+    private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
     private val errorHandler: (Throwable) -> Unit = {}
 ) {
     private val channels = mutableListOf<Channel>()
@@ -41,6 +42,7 @@ class RabbitQueue(
                     json,
                     telemetryService,
                     workerScope,
+                    metrics,
                     errorHandler
                 ),
                 ListenerCancelCallback()

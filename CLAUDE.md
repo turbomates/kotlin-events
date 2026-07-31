@@ -82,6 +82,10 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 - `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support
 - `ListenerDeliveryCallback`: Handles message delivery with automatic retry logic
 - `QueueConfig`: Configuration for queue behavior (prefetch, maxRetries, retryDelay)
+- `ConsumerMetrics`: The consumer side of the observability, handed to `RabbitQueue` — time a delivery
+  waited for a free worker and time the subscriber ran, and every ending other than an ack (`failed`
+  followed by `retried`, `parked` or `requeued`, plus `noSubscriber`) for the application registry
+  (default `NoOpConsumerMetrics`)
 
 **Retry mechanism:** 3-queue architecture per subscriber (Main Queue → DLX → Retry Queue → Main Queue → Parking Lot after max retries)
 
