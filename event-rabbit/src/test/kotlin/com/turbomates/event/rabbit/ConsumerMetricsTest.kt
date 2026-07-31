@@ -18,24 +18,30 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.RabbitMQContainer
 
 class ConsumerMetricsTest {
+    private lateinit var container: RabbitMQContainer
     private lateinit var factory: ConnectionFactory
 
     @BeforeEach
     fun setUp() {
-        val underTest = RabbitMQContainer("rabbitmq:3")
-        underTest.start()
+        container = RabbitMQContainer("rabbitmq:3")
+        container.start()
         factory = ConnectionFactory().apply {
-            host = underTest.host
-            port = underTest.amqpPort
+            host = container.host
+            port = container.amqpPort
             username = "guest"
             password = "guest"
         }
     }
 
+    @AfterEach
+    fun tearDown() {
+        container.stop()
+    }
     @Test
     fun `reports a handled delivery`() = runBlocking {
         val metrics = RecordingConsumerMetrics()
