@@ -64,6 +64,11 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, per-event failures, total outbox depth on its own ticker, for the application registry (default `NoOpOutboxMetrics`)
+- `FailedEvent`: What the `errorHandler` of `OutboxPublisher` is called with, together with the
+  failure — the event itself (null for a row that can not be decoded, `payload` holds it as stored),
+  bucket, partition key and attempts made. Observation only, the publisher logs and defers the row on
+  its own; a handler that throws is logged and ignored. Failures that are not about one event stay
+  with the log and `OutboxMetrics`
 - `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
 - `EventSerialization`: `Json` and `KSerializer<Event>` of the jsonb columns, carried by the `Outbox`
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, partition_key, database-assigned sequence, attempts, next_attempt_at, trace_information, published_at)
@@ -76,7 +81,8 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 
 **Key components:**
 - `RabbitPublisher`: Publishes events to RabbitMQ topic exchange with trace headers. Waits for the
-  publisher confirm before returning (a nack or a timeout throws, so the outbox keeps the event),
+  publisher confirm before returning (a nack or a timeout throws, so the outbox keeps the event, and
+  the optional `errorHandler` sees the event and the failure before it is rethrown),
   serializes publishes on one channel with a mutex (a confirm covers everything unconfirmed on the
   channel, not one message) and reopens connection and channel after a failure. `AutoCloseable`
 - `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support

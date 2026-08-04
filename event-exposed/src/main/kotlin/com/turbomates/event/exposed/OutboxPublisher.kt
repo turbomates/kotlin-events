@@ -40,6 +40,11 @@ import org.slf4j.LoggerFactory
  * @param depthInterval how often [OutboxMetrics.outboxDepth] is measured. Its own ticker, not a part
  * of the sweep: a sweep drowning in a deep backlog can take tens of seconds, and that is exactly
  * when the gauge has to stay fresh.
+ * @param errorHandler called with every [FailedEvent] and the failure it comes from. The publisher
+ * logs it and defers the row on its own, this only adds what the application does on top — a report
+ * carrying the event, an alert — and can not change what happens to the row. A handler that throws
+ * is logged and ignored. Failures that are not about one event (a bucket, a sweep) are logged and
+ * reported through [OutboxMetrics], there is nothing to hand over there but the exception.
  */
 class OutboxPublisher(
     private val database: Database,
@@ -48,7 +53,8 @@ class OutboxPublisher(
     private val delay: Duration = Duration.parse("1s"),
     private val depthInterval: Duration = Duration.parse("10s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val metrics: OutboxMetrics = NoOpOutboxMetrics
+    private val metrics: OutboxMetrics = NoOpOutboxMetrics,
+    private val errorHandler: (FailedEvent, Throwable) -> Unit = { _, _ -> }
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -169,6 +175,34 @@ class OutboxPublisher(
         inTopLevelSuspendTransaction(database, null, null, null) {
             outbox.failed(event.id, event.attempts)
         }
-        metrics.eventFailed(bucket, event.id, event.attempts + 1, error)
+        val attempts = event.attempts + 1
+        metrics.eventFailed(bucket, event.id, attempts, error)
+        report(
+            FailedEvent(
+                bucket = bucket,
+                id = event.id,
+                partitionKey = event.partitionKey,
+                attempts = attempts,
+                event = event.event,
+                payload = event.payload,
+                traceInformation = event.traceInformation
+            ),
+            error
+        )
+    }
+
+    /**
+     * The `errorHandler` of the application decides nothing — the row is deferred by the time it is
+     * called — so a handler that throws must not take the publisher with it: it would kill the sweep
+     * loop over a broken report of a failure that is already handled.
+     */
+    private fun report(failed: FailedEvent, error: Throwable) {
+        try {
+            errorHandler(failed, error)
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (ignore: Throwable) {
+            logger.error("outbox error handler of event ${failed.id} threw", ignore)
+        }
     }
 }

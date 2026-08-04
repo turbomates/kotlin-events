@@ -164,6 +164,7 @@ class Outbox(
                     partitionKey = row[events.partitionKey],
                     attempts = row[events.attempts],
                     event = decoded.getOrNull(),
+                    payload = row[rawEvent],
                     traceInformation = row[events.traceInformation],
                     error = decoded.exceptionOrNull()
                 )
@@ -239,13 +240,15 @@ class Outbox(
         /**
          * One unpublished row. [event] is null when the row can not be read back — an unknown type
          * mid-rollout, a serializer that lost a field — with the cause in [error]; the publisher
-         * treats it as one more failed attempt, not as a failure of the batch.
+         * treats it as one more failed attempt, not as a failure of the batch. [payload] is the row
+         * as it is stored, which is all there is of an event that can not be decoded.
          */
         class Item(
             val id: UUID,
             val partitionKey: UUID,
             val attempts: Int,
             val event: Event?,
+            val payload: String,
             val traceInformation: TraceInformation?,
             val error: Throwable? = null
         )

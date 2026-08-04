@@ -227,6 +227,45 @@ class PrometheusOutboxMetrics(private val registry: MeterRegistry) : OutboxMetri
 }
 ```
 
+**Custom error handling:**
+
+The publisher logs everything it catches and recovers from all of it by itself — `errorHandler` is
+what the application does on top: a report carrying the event, an alert of its own, a domain specific
+log line. It observes, it does not decide: the row is already deferred by the time it is called, and
+nothing it does changes what happens to the event.
+
+```kotlin
+OutboxPublisher(
+    database = database,
+    publishers = publishers,
+    outbox = outbox,
+    errorHandler = { failed, error ->
+        Sentry.captureException(error) {
+            // the one thing a metric can not carry: the data that keeps choking the subscriber
+            it.setExtra("event", failed.event?.toString() ?: failed.payload)
+            it.setExtra("attempts", failed.attempts.toString())
+        }
+    }
+)
+```
+
+The hook fires per event, which is the only failure the outbox has anything to hand over about: a
+bucket it could not take or a sweep that never reached the database is a number, and it is already
+logged and reported by `OutboxMetrics.bucketFailed`. `FailedEvent` carries the attempts made so far,
+the partition key that waits behind it, and the event itself — `null` when the row can not be
+decoded, which is exactly when `payload`, the row as it is stored, is all there is of it. A handler
+that throws costs nothing but a log line.
+
+The publishing end of RabbitMQ has the same seam, with the event and the failure that kept it in the
+outbox — a dead connection, a nack, a confirm that timed out:
+
+```kotlin
+RabbitPublisher(config, json, errorHandler = { event, error -> Sentry.captureException(error) })
+```
+
+The deferred command outbox takes the same pair (`ScheduledDeferredCommand` and the failure), and so
+does the consumer side through the `errorHandler` of `RabbitQueue`.
+
 **Failing events, backoff and order:**
 
 A publisher that throws rolls the deletion of the row back, so the event is never lost — but it is
