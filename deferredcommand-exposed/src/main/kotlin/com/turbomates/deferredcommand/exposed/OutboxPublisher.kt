@@ -26,12 +26,19 @@ import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 import org.jetbrains.exposed.v1.json.jsonb
 import org.slf4j.LoggerFactory
 
+/**
+ * @param errorHandler called with the command a publisher failed on and the failure. The publisher
+ * logs it and leaves the row for the next poll on its own, this only adds what the application does
+ * on top — a report carrying the command, an alert. A handler that throws is logged and ignored. A
+ * poll that fails before it reaches its commands has no command to hand over, it is only logged.
+ */
 class OutboxPublisher(
     private val database: Database,
     private val publishers: List<Publisher>,
     private val limit: Int = 1000,
     private val delay: Duration = Duration.parse("1s"),
-    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val errorHandler: (ScheduledDeferredCommand, Throwable) -> Unit = { _, _ -> }
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
 
@@ -48,6 +55,7 @@ class OutboxPublisher(
                         publish(command.id)
                     } catch (ignore: Throwable) {
                         logger.error("error while publishing deferred command ${command.id}", ignore)
+                        report(command, ignore)
                     }
                 }
             } catch (ignore: Throwable) {
@@ -55,6 +63,15 @@ class OutboxPublisher(
             } finally {
                 delay(delay)
             }
+        }
+    }
+
+    /** A broken handler must not take the polling loop down, the command is already logged by then. */
+    private fun report(command: ScheduledDeferredCommand, error: Throwable) {
+        try {
+            errorHandler(command, error)
+        } catch (ignore: Throwable) {
+            logger.error("error handler of deferred command ${command.id} threw", ignore)
         }
     }
 

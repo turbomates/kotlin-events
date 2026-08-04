@@ -11,11 +11,13 @@ import com.turbomates.event.seriazlier.EventSerializer
 import java.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 
 /**
  * Publishes events to the topic exchange of [Config.exchange] and returns only after the broker has
@@ -39,13 +41,20 @@ import kotlinx.serialization.json.Json
  * publisher for the rest of the process lifetime.
  *
  * @param confirmTimeout how long to wait for the broker confirm before failing the publish.
+ * @param errorHandler called with the event and the failure whenever a publish does not reach the
+ * broker — a dead connection, a nack, a confirm that timed out. It is the counterpart of the
+ * `errorHandler` of [RabbitQueue] on the publishing side, and like it, it only observes: the failure
+ * is rethrown either way, which is what keeps the event in the outbox. A handler that throws is
+ * logged and ignored, it never replaces the error the caller has to see.
  */
 class RabbitPublisher(
     private val config: Config,
     private val json: Json,
     private val confirmTimeout: Duration = 30.seconds,
-    private val buildProperties: AMQP.BasicProperties.Builder.() -> Unit = {}
+    private val buildProperties: AMQP.BasicProperties.Builder.() -> Unit = {},
+    private val errorHandler: (Event, Throwable) -> Unit = { _, _ -> }
 ) : Publisher, AutoCloseable {
+    private val logger = LoggerFactory.getLogger(javaClass)
     private val publishMutex = Mutex()
     private val lifecycleLock = Any()
     private var connection: Connection? = null
@@ -84,6 +93,7 @@ class RabbitPublisher(
                     // The channel is closed by a nack and unusable after a dead connection, drop it
                     // and let the next publish open a new one.
                     discardChannel()
+                    report(event, expected)
                     throw expected
                 }
             }
@@ -101,6 +111,24 @@ class RabbitPublisher(
             channel = null
             connection?.let { runCatching { it.close() } }
             connection = null
+        }
+    }
+
+    /**
+     * The caller of this publisher is the outbox, and what it does with the failure — keep the row,
+     * count the attempt, hold the stream back — is decided by the exception below, not here. A
+     * handler of the application that throws must therefore not replace it: it is logged and the
+     * original failure goes on to the caller.
+     */
+    private fun report(event: Event, error: Throwable) {
+        // A cancelled publish is a stopped worker, not a broker that refused the event.
+        if (error is CancellationException) {
+            return
+        }
+        try {
+            errorHandler(event, error)
+        } catch (ignore: Throwable) {
+            logger.error("rabbit publisher error handler threw", ignore)
         }
     }
 

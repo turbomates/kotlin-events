@@ -133,11 +133,17 @@ class OutboxPublisherTest {
         val head = stream.first()
         val publisher = FailingPublisher(head.original.testId())
         val metrics = RecordingOutboxMetrics()
-        val retrying = Outbox(TEST_BUCKET_COUNT, retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours))
+        val failures = Collections.synchronizedList(mutableListOf<FailedEvent>())
+        // a backoff longer than the test, so the head of the stream is never tried a second time
+        val retrying = Outbox(
+            TEST_BUCKET_COUNT,
+            retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours, maxDelay = 1.hours)
+        )
 
         val job = OutboxPublisher(
             database, listOf(publisher), retrying,
-            delay = POLL_DELAY, depthInterval = POLL_DELAY, metrics = metrics
+            delay = POLL_DELAY, depthInterval = POLL_DELAY, metrics = metrics,
+            errorHandler = { failed, _ -> failures.add(failed) }
         ).start()
         awaitUntil {
             val snapshot = metrics.snapshot()
@@ -159,7 +165,54 @@ class OutboxPublisherTest {
         }
         assertEquals(1, attemptsMade)
         assertNotNull(nextAttemptAt, "the failed row carries its backoff")
+        val reported = failures.single()
+        assertEquals(head.id, reported.id)
+        assertEquals(partitionKey, reported.partitionKey)
+        assertEquals(1, reported.attempts)
+        assertEquals(head.original, reported.event, "the handler gets the event, not just its id")
     }
+
+    @Test
+    fun `the error handler gets the row that can not be decoded and a handler that throws is ignored`() =
+        runBlocking {
+            val broken = UUID.randomUUID()
+            val partitionKey = UUID.randomUUID()
+            transaction(database) {
+                exec(
+                    "INSERT INTO outbox_events (id, event, bucket, partition_key, trace_information) VALUES (" +
+                        "'$broken', '{\"type\": \"com.missing.Event\", \"body\": {}}', " +
+                        "${outbox.bucket(partitionKey)}, '$partitionKey', " +
+                        "'{\"traceparent\": null, \"tracestate\": null, \"baggage\": null}')"
+                )
+            }
+            val free = PublicEvent(OutboxEvent(UUID.randomUUID()))
+            insert(free)
+            val publisher = CollectingPublisher()
+            val failures = Collections.synchronizedList(mutableListOf<FailedEvent>())
+
+            val job = OutboxPublisher(
+                database, listOf(publisher), outbox, delay = POLL_DELAY,
+                errorHandler = { failed, _ ->
+                    failures.add(failed)
+                    error("the handler of the application is broken")
+                }
+            ).start()
+            awaitUntil { failures.isNotEmpty() && publisher.published.isNotEmpty() }
+            job.cancelAndJoin()
+
+            val reported = failures.first()
+            assertEquals(broken, reported.id)
+            assertEquals(null, reported.event, "an undecodable row has no event, only the payload")
+            assertTrue(
+                "com.missing.Event" in reported.payload,
+                "the row that can not be decoded is handed over as it is stored, got ${reported.payload}"
+            )
+            assertEquals(
+                listOf((free.original as OutboxEvent).id),
+                publisher.published.toList(),
+                "the throwing handler does not stop the sweep"
+            )
+        }
 
     @Test
     fun `a deferred stream is retried after its backoff and drains in order`() = runBlocking {
