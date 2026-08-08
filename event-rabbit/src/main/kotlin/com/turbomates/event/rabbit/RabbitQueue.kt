@@ -123,7 +123,7 @@ class RabbitQueue(
     // by hand included; without it nothing is touched. Best effort: a broker that does not answer is
     // logged and left alone, the consumer starts either way.
     private fun syncBindings(queue: String, routes: Set<String>) {
-        val boundRoutes = boundRoutes ?: return
+        if (boundRoutes == null) return
         try {
             val stale = boundRoutes.of(queue, config.exchange) - routes
             if (stale.isEmpty()) return
@@ -135,6 +135,11 @@ class RabbitQueue(
                     channel.queueUnbind(queue, config.exchange, route)
                 }
             }
+        } catch (interrupted: InterruptedException) {
+            // The HTTP call of a BoundRoutes is a blocking one: hand the interruption back to
+            // whoever owns the thread that called run() instead of ending it here.
+            Thread.currentThread().interrupt()
+            logger.error("Interrupted while syncing the bindings of $queue", interrupted)
         } catch (expected: Exception) {
             logger.error("Failed to sync the bindings of $queue", expected)
         }

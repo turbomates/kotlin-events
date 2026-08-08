@@ -19,26 +19,31 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.RabbitMQContainer
 
 class RabbitQueueTest {
+    private lateinit var container: RabbitMQContainer
     private lateinit var factory: ConnectionFactory
-    private var managementPort = 0
 
     @BeforeEach
     fun setUp() {
         // The management plugin image: the bindings of a queue are readable over HTTP only.
-        val underTest = RabbitMQContainer("rabbitmq:3-management")
-        underTest.start()
-        managementPort = underTest.httpPort
+        container = RabbitMQContainer("rabbitmq:3-management")
+        container.start()
         factory = ConnectionFactory().apply {
-            host = underTest.host
-            port = underTest.amqpPort
+            host = container.host
+            port = container.amqpPort
             username = "guest"
             password = "guest"
         }
 
+    }
+
+    @AfterEach
+    fun tearDown() {
+        container.stop()
     }
 
     @Test
@@ -86,7 +91,7 @@ class RabbitQueueTest {
     @Test
     fun `route of a dropped subscription is unbound`() = runBlocking {
         val config = Config(factory, "test", "test")
-        val management = ManagementApi.of(factory, managementPort)
+        val management = ManagementApi.of(factory, container.httpPort)
         val before = subscriber(listOf(TestEvent.subscriber { }, AnotherTestEvent.subscriber { }))
         val queue = before.queueName(config.queuePrefix)
         queueOf(config, before, this).run { run(); close() }
@@ -118,14 +123,14 @@ class RabbitQueueTest {
 
         assertEquals(
             setOf(TestEvent.routeName(), AnotherTestEvent.routeName()),
-            ManagementApi.of(factory, managementPort).of(queue, config.exchange)
+            ManagementApi.of(factory, container.httpPort).of(queue, config.exchange)
         )
     }
 
     @Test
     fun `routes of a queue shared by two subscribers survive each other`() = runBlocking {
         val config = Config(factory, "test", "test")
-        val management = ManagementApi.of(factory, managementPort)
+        val management = ManagementApi.of(factory, container.httpPort)
         // The same name(), so the same queue: its routes are the union of both subscribers, and
         // neither may take the routes of the other for stale ones.
         val first = subscriber(listOf(TestEvent.subscriber { }))
