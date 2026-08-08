@@ -89,7 +89,6 @@ class RabbitQueue(
             maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
-        channel.run { queueConfig.dlxQueue() }
         channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
         channel.consumer(queueConfig, mapOf(key to this))
         return BoundQueue(queueConfig.queueName, setOf(key.routeName()))
