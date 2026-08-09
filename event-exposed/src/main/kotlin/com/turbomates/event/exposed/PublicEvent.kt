@@ -2,21 +2,17 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.exposed.serializer.UUIDSerializer
-import com.turbomates.event.seriazlier.EventSerializer
-import com.turbomates.event.seriazlier.LocalDateTimeSerializer
 import java.util.UUID
-import kotlinx.serialization.Serializable
 
-@Serializable
+/**
+ * An event on its way to the outbox: what the row is built from, not a payload of its own. The
+ * columns are written one by one by [Outbox.batchEventsInsert], and the event itself goes through
+ * the serializer of the [EventSerialization] the outbox holds.
+ */
 data class PublicEvent(
-    @Serializable(with = EventSerializer::class)
     val original: Event,
-    @Serializable(with = UUIDSerializer::class)
     val id: UUID = uuidV7(),
     val traceInformation: TraceInformation? = null
 ) {
-    @Serializable(with = LocalDateTimeSerializer::class)
     val createdAt = original.timestamp
 }
-

@@ -1,6 +1,7 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.NoOpTelemetry
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
@@ -208,6 +209,17 @@ class Outbox(
     fun depth(): Long = events.selectAll().where { events.publishedAt.isNull() }.count()
 
     /**
+     * Whether an event of [key] can be read back out of the tables it is about to be written to: it
+     * either declares a name registered with the [EventSerialization] of this outbox, or declares
+     * none and is stored under its class name.
+     *
+     * A row nobody can decode is not a failure that passes: the outbox carries it until it is
+     * deleted by hand, holding back the whole stream it belongs to, and an event sourced aggregate
+     * that has one in its history is never rebuilt again.
+     */
+    internal fun readable(key: Event.Key<*>): Boolean = serialization.events.readable(key)
+
+    /**
      * Writes [raised] to the outbox, and the ones that are event sourced to the event sourcing table.
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
@@ -271,13 +283,19 @@ class Outbox(
  * EventSerialization(Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domain })
  * ```
  *
+ * [events] resolves the `type` of a stored row back to an event. Pass the registry the rest of the
+ * application was built with — the same instance the rabbit consumer and the event sourcing storage
+ * hold — or leave it out while no event declares a name, see [EventRegistry].
+ *
  * [serializer] decides what a row looks like, [EventSerializer] writes `{"type": .., "body": {..}}`.
  * A table that already holds rows can only be read back by a serializer that understands them, so
- * replacing it is a migration, not a setting.
+ * replacing it is a migration, not a setting. It defaults to the serializer of [events] — a `copy`
+ * that changes the registry keeps the serializer built for the old one, build a new instance instead.
  */
 data class EventSerialization(
     val json: Json = DEFAULT_JSON,
-    val serializer: KSerializer<Event> = EventSerializer
+    val events: EventRegistry = EventRegistry(),
+    val serializer: KSerializer<Event> = events.serializer
 ) {
     companion object {
         val DEFAULT_JSON: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }

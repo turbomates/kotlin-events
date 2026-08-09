@@ -34,4 +34,19 @@ data class Config(
      * delivery order. See [QueueConfig.maxConcurrency].
      */
     val defaultMaxConcurrency: Int = 1,
+    /**
+     * Bind a queue to the route its event was published under before it declared an
+     * [com.turbomates.event.Event.Key.name], on top of the declared one.
+     *
+     * Declaring a name changes the routing key of that event, and publishers and consumers are not
+     * deployed at the same instant: for the length of a rolling deploy a consumer already on the new
+     * name would receive nothing from a publisher still on the old one. Only events that declare a
+     * name are bound twice, the routes of everything else are unchanged.
+     *
+     * Turn it off once every publisher of the events this application consumes emits declared names.
+     * A [BoundRoutes] then unbinds the legacy routes on the next start; without one they stay bound
+     * and keep the queue receiving anything still published under them.
+     */
+    @Deprecated("Transitional: turn it off once every publisher emits declared event names.")
+    val bindLegacyRoutes: Boolean = true
 )

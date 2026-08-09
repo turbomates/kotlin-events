@@ -29,5 +29,32 @@ abstract class Event {
     @Transient
     open val partitionKey: UUID? = null
 
-    interface Key<T : Event>
+    interface Key<T : Event> {
+        /**
+         * Stable identity of the event: the routing key it is published under and the `type` of the
+         * stored payload.
+         *
+         * Declare it by hand and never change it again. It is what keeps a rename or a move of the
+         * event class from orphaning the bindings of the queues that consume it and from making the
+         * rows already written unreadable — the whole point of the property is that it does not
+         * follow the code:
+         * ```
+         * companion object : Key<SubscriptionCreated> {
+         *     override val name = "billing.subscription.created"
+         * }
+         * ```
+         *
+         * Dot separated, from the general to the specific, `snake_case` inside a segment, at least
+         * two segments. The dots are the hierarchy a topic exchange matches on: a flat name is never
+         * caught by a `billing.#` binding, and the form cannot be corrected later without migrating
+         * every binding and every stored row.
+         *
+         * The default derives the name from the class of the key, which is what the routes of this
+         * library looked like before names were declared, so an application that declares nothing
+         * keeps publishing and consuming exactly what it did. A derived name is as fragile as the
+         * class it comes from and is never written to a stored payload, see [derivedName].
+         */
+        @Suppress("DEPRECATION")
+        val name: String get() = derivedName()
+    }
 }

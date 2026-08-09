@@ -8,7 +8,6 @@ import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.seriazlier.EventSerializer
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -16,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
@@ -24,6 +24,7 @@ internal class ListenerDeliveryCallback(
     private val config: QueueConfig,
     private val subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
     private val json: Json,
+    private val serializer: KSerializer<Event>,
     private val telemetryService: Telemetry,
     private val scope: CoroutineScope,
     private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
@@ -88,7 +89,7 @@ internal class ListenerDeliveryCallback(
             val startedAt = TimeSource.Monotonic.markNow()
             try {
                 logger.info("Event $eventJsonString accepted ")
-                val event = json.decodeFromString(EventSerializer, eventJsonString)
+                val event = json.decodeFromString(serializer, eventJsonString)
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
                 if (callback == null) {
                     // The queue is bound to a key this consumer has no subscriber for: the delivery

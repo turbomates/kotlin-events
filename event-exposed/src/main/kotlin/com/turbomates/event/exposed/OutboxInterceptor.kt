@@ -19,8 +19,23 @@ class OutboxInterceptor(private val outbox: Outbox) : GlobalStatementInterceptor
     }
 
     private fun save(raised: List<Event>) {
+        raised.forEach { checkReadable(it) }
         val events = raised.map { PublicEvent(it, traceInformation = outbox.traceInformation()) }
         outbox.batchEventsInsert(events)
+    }
+
+    /**
+     * Fails the transaction that raised an event the outbox cannot read back, instead of letting it
+     * commit a row that has to be deleted by hand later. It costs the author of a new event one
+     * failed request, right where the event is raised; the alternative surfaces days later, in the
+     * worker or in another service, as a stream that stopped moving.
+     */
+    private fun checkReadable(event: Event) {
+        check(outbox.readable(event.key)) {
+            "Event '${event.key.name}' is not registered in the EventRegistry of this outbox: it " +
+                "would be written under a name nothing can resolve back and would never be " +
+                "published. Add EventRegistry(${event::class.simpleName}) to its EventSerialization."
+        }
     }
 }
 

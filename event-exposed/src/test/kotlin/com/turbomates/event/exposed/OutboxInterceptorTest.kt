@@ -1,8 +1,10 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
@@ -14,7 +16,10 @@ import org.testcontainers.containers.PostgreSQLContainer
 
 class OutboxInterceptorTest {
     private lateinit var database: Database
-    private val outbox = Outbox(TEST_BUCKET_COUNT)
+    private val outbox = Outbox(
+        TEST_BUCKET_COUNT,
+        serialization = EventSerialization(events = EventRegistry(NamedEvent))
+    )
     private lateinit var interceptor: OutboxInterceptor
 
     @BeforeEach
@@ -37,11 +42,7 @@ class OutboxInterceptorTest {
 
     @Test
     fun `should intercept event`() {
-        transaction(database) {
-            Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
-                String(readAllBytes()).split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { exec(it) }
-            }
-        }
+        createTable()
         transaction(database) {
             events.addEvent(TestEvent())
         }
@@ -50,10 +51,61 @@ class OutboxInterceptorTest {
         }
     }
 
+    @Test
+    fun `an event of a registered name is written`() {
+        createTable()
+        transaction(database) {
+            events.addEvent(NamedEvent())
+        }
+        transaction(database) {
+            assertEquals(1, outbox.events.selectAll().count())
+        }
+    }
+
+    @Test
+    fun `an event of a name nothing registered fails the transaction that raised it`() {
+        createTable()
+        val failure = assertFailsWith<IllegalStateException> {
+            transaction(database) {
+                events.addEvent(UnregisteredEvent())
+            }
+        }
+        assertEquals(true, failure.message?.contains("interceptor.test.unregistered"))
+        transaction(database) {
+            assertEquals(0, outbox.events.selectAll().count())
+        }
+    }
+
+    private fun createTable() {
+        transaction(database) {
+            Event::class.java.classLoader.getResourceAsStream("outbox_events_postgres_table.sql")?.apply {
+                String(readAllBytes()).split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { exec(it) }
+            }
+        }
+    }
+
     @Serializable
     private class TestEvent : Event() {
         override val key get() = TestEvent
 
         companion object : Key<TestEvent>
+    }
+}
+
+@Serializable
+internal class NamedEvent : Event() {
+    override val key get() = Companion
+
+    companion object : Event.Key<NamedEvent> {
+        override val name = "interceptor.test.named"
+    }
+}
+
+@Serializable
+internal class UnregisteredEvent : Event() {
+    override val key get() = Companion
+
+    companion object : Event.Key<UnregisteredEvent> {
+        override val name = "interceptor.test.unregistered"
     }
 }

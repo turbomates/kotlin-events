@@ -3,10 +3,12 @@ package com.turbomates.event.rabbit
 import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.Channel
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.Telemetry
+import com.turbomates.event.hasDeclaredName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -23,7 +25,13 @@ class RabbitQueue(
     private val queueType: QueueType? = null,
     private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
     private val errorHandler: (Throwable) -> Unit = {},
-    private val boundRoutes: BoundRoutes? = null
+    private val boundRoutes: BoundRoutes? = null,
+    /**
+     * Resolves the name a delivery carries back to an event. Every subscriber started here registers
+     * its own key, so a consumer only application needs no registry of its own; pass the one the rest
+     * of the application was built with when it also publishes or reads an outbox.
+     */
+    private val events: EventRegistry = EventRegistry()
 ) {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     private val channels = mutableListOf<Channel>()
@@ -43,6 +51,7 @@ class RabbitQueue(
                     config,
                     subscribers,
                     json,
+                    events.serializer,
                     telemetryService,
                     workerScope,
                     metrics,
@@ -54,6 +63,7 @@ class RabbitQueue(
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
+        register(eventsSubscribers.flatMap { it.subscribers() } + eventSubscribers)
         val bound = eventsSubscribers.map { eventsSubscriber ->
             eventsSubscriber.consumers(queuesConfig)
         } + eventSubscribers.map { eventSubscriber ->
@@ -65,6 +75,21 @@ class RabbitQueue(
         bound.groupBy(BoundQueue::queue, BoundQueue::routes).forEach { (queue, routes) ->
             syncBindings(queue, routes.flatten().toSet())
         }
+    }
+
+    /**
+     * Everything this application consumes it also has to decode, and the keys of its subscribers are
+     * the whole list of it — so the consuming side of the registry needs no help from the application.
+     * The events it publishes are the ones to register by hand, nothing here enumerates those.
+     */
+    private fun register(subscribers: List<EventSubscriber<out Event>>) {
+        val derived = subscribers.map { it.key }.filterNot { events.register(it) }
+        if (derived.isEmpty()) return
+        logger.warn(
+            "${derived.size} subscribed events have no declared name and are routed and stored under " +
+                "one derived from their class, which changes when the class is renamed or moved: " +
+                "${derived.joinToString { it.routeName() }}. Override Event.Key.name on them."
+        )
     }
 
     private fun channel(queueConfig: QueueConfig): Channel {
@@ -89,9 +114,12 @@ class RabbitQueue(
             maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
-        channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
+        val routes = key.routes()
+        routes.forEach { route ->
+            channel.queueBind(queueConfig.queueName, config.exchange, route)
+        }
         channel.consumer(queueConfig, mapOf(key to this))
-        return BoundQueue(queueConfig.queueName, setOf(key.routeName()))
+        return BoundQueue(queueConfig.queueName, routes)
     }
 
     private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>): BoundQueue {
@@ -106,12 +134,24 @@ class RabbitQueue(
             maxConcurrency = config.defaultMaxConcurrency,
         )
         val channel = channel(queueConfig)
-        val routes = subscribers().map { it.key.routeName() }.toSet()
+        val routes = subscribers().flatMap { it.key.routes() }.toSet()
         routes.forEach { route ->
             channel.queueBind(queueConfig.queueName, config.exchange, route)
         }
         channel.consumer(queueConfig, subscribers().associateBy { it.key })
         return BoundQueue(queueConfig.queueName, routes)
+    }
+
+    /**
+     * The routes a queue is bound to for this key: the one its events are published under, plus the
+     * one they used to be published under before the name was declared, see [Config.bindLegacyRoutes].
+     * Both belong to the set [syncBindings] measures against, or the legacy route would be unbound
+     * the moment it is bound.
+     */
+    @Suppress("DEPRECATION")
+    private fun Event.Key<*>.routes(): Set<String> {
+        val legacy = if (config.bindLegacyRoutes && hasDeclaredName()) legacyRouteName() else null
+        return setOfNotNull(routeName(), legacy)
     }
 
     // queueBind only ever adds: a subscription dropped since the last start leaves its binding

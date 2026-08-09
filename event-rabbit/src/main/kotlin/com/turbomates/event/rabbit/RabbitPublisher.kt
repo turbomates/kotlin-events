@@ -5,9 +5,9 @@ import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.Channel
 import com.rabbitmq.client.Connection
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.Publisher
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.seriazlier.EventSerializer
 import java.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -51,6 +51,11 @@ class RabbitPublisher(
     private val config: Config,
     private val json: Json,
     private val confirmTimeout: Duration = 30.seconds,
+    /**
+     * Resolves an event to the name it is published and stored under. Pass the registry the rest of
+     * the application was built with, the same instance its outbox and its consumers hold.
+     */
+    private val events: EventRegistry = EventRegistry(),
     private val buildProperties: AMQP.BasicProperties.Builder.() -> Unit = {},
     private val errorHandler: (Event, Throwable) -> Unit = { _, _ -> }
 ) : Publisher, AutoCloseable {
@@ -79,7 +84,7 @@ class RabbitPublisher(
             )
         }
         val properties = propsBuilder.build()
-        val body = json.encodeToString(EventSerializer, event).toByteArray()
+        val body = json.encodeToString(events.serializer, event).toByteArray()
         val routingKey = event.key.routeName()
         publishMutex.withLock {
             // Everything below blocks: the publish itself and the wait for the confirm.

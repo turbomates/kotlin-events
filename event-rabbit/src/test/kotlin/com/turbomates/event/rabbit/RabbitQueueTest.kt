@@ -151,6 +151,56 @@ class RabbitQueueTest {
         )
     }
 
+    @Test
+    fun `a declared name is bound together with the route it replaced`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val management = ManagementApi.of(factory, container.httpPort)
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { }))
+        val queue = subscriber.queueName(config.queuePrefix)
+        queueOf(config, subscriber, this).run { run(); close() }
+
+        assertEquals(
+            setOfNotNull(NamedTestEvent.routeName(), NamedTestEvent.legacyRouteName()),
+            management.of(queue, config.exchange)
+        )
+        assertEquals("rabbit.test.named", NamedTestEvent.routeName())
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `the route a declared name replaced is unbound once the legacy binding is turned off`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val management = ManagementApi.of(factory, container.httpPort)
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { }))
+        val queue = subscriber.queueName(config.queuePrefix)
+        queueOf(config, subscriber, this).run { run(); close() }
+
+        val migrated = config.copy(bindLegacyRoutes = false)
+        queueOf(migrated, subscriber, this, boundRoutes = management).run { run(); close() }
+
+        assertEquals(setOf(NamedTestEvent.routeName()), management.of(queue, config.exchange))
+    }
+
+    @Test
+    fun `an event of a declared name reaches the subscriber that registered itself`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        var received: Event? = null
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { received = it }))
+        // Two registries that never met: the consumer registers the keys of its own subscribers, and
+        // the publisher needs none — it takes the name off the event it is given.
+        val rabbitQueue = queueOf(config, subscriber, this)
+        rabbitQueue.run()
+        RabbitPublisher(config, Json).use { it.publish(NamedTestEvent("test")) }
+        withTimeout(60.seconds) {
+            while (isActive && received == null) {
+                delay(100)
+            }
+        }
+        rabbitQueue.close()
+
+        assertEquals(NamedTestEvent("test"), received)
+    }
+
     private fun queueOf(
         config: Config,
         subscriber: EventsSubscriber,
@@ -186,5 +236,15 @@ data class AnotherTestEvent(val name: String) : Event() {
         get() = AnotherTestEvent
 
     companion object : Key<AnotherTestEvent>
+}
+
+@Serializable
+data class NamedTestEvent(val value: String) : Event() {
+    override val key: Key<out Event>
+        get() = NamedTestEvent
+
+    companion object : Key<NamedTestEvent> {
+        override val name = "rabbit.test.named"
+    }
 }
 
