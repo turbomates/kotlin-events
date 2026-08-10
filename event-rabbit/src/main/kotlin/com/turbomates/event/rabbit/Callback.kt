@@ -15,6 +15,8 @@ import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
@@ -36,22 +38,20 @@ internal class ListenerDeliveryCallback(
     // in the buffer waiting for a free worker. trySend therefore never rejects.
     private val deliveries = Channel<Buffered>(Channel.UNLIMITED)
 
-    init {
-        // One worker per unit of concurrency: a subscriber processes at most
-        // maxConcurrency messages at once, and with maxConcurrency == 1 a single
-        // worker draining the channel preserves delivery order (FIFO).
-        repeat(config.maxConcurrency) {
-            scope.launch {
-                for (delivery in deliveries) {
-                    val waited = delivery.enqueuedAt.elapsedNow()
-                    try {
-                        process(delivery.message, waited)
-                    } catch (cancellation: CancellationException) {
-                        throw cancellation
-                    } catch (expected: Throwable) {
-                        logger.error("Failed to process delivery from ${config.queueName}", expected)
-                        errorHandler(expected)
-                    }
+    // One worker per unit of concurrency: a subscriber processes at most
+    // maxConcurrency messages at once, and with maxConcurrency == 1 a single
+    // worker draining the channel preserves delivery order (FIFO).
+    private val workers = List(config.maxConcurrency) {
+        scope.launch {
+            for (delivery in deliveries) {
+                val waited = delivery.enqueuedAt.elapsedNow()
+                try {
+                    process(delivery.message, waited)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (expected: Throwable) {
+                    logger.error("Failed to process delivery from ${config.queueName}", expected)
+                    errorHandler(expected)
                 }
             }
         }
@@ -62,6 +62,16 @@ internal class ListenerDeliveryCallback(
         // channel until one of the maxConcurrency workers is free to process it.
         // The mark it carries is what ConsumerMetrics reports as `waited`.
         deliveries.trySend(Buffered(message, TimeSource.Monotonic.markNow()))
+    }
+
+    /**
+     * The consumer is gone and no new deliveries arrive: stops the workers once they drain what is
+     * already buffered. Those deliveries are still unacked on the channel, so they settle as usual
+     * for as long as it stays open.
+     */
+    suspend fun stop() {
+        deliveries.close()
+        workers.joinAll()
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -124,6 +134,11 @@ internal class ListenerDeliveryCallback(
                             report { metrics.retried(queue, routingKey, retries) }
                         }
                     } else {
+                        // There are no retry queues to pace the redelivery: a bare nack puts the
+                        // message back at the head of the queue and it comes back immediately — a
+                        // hot loop for as long as it keeps failing. The worker holds the delivery
+                        // unacked for retryDelay instead: only this stream waits, its order stays.
+                        delay(config.retryDelay)
                         channel.basicNack(message.envelope.deliveryTag, false, true)
                         report { metrics.requeued(queue, routingKey) }
                     }
@@ -195,10 +210,23 @@ internal class ListenerDeliveryCallback(
 }
 
 
-internal class ListenerCancelCallback : CancelCallback {
+/**
+ * The broker cancelled the consumer without being asked to — its queue was deleted or lost its
+ * node. Runs on a thread of the amqp client, so it must not throw and must not block: it only
+ * reports and hands recreation over to [onCancelled], otherwise the queue silently stops being
+ * read for the rest of the process's life.
+ */
+internal class ListenerCancelCallback(
+    private val queue: String,
+    private val onCancelled: () -> Unit
+) : CancelCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     override fun handle(consumerTag: String?) {
-        logger.error("Listener was cancelled $consumerTag")
-        throw InterruptedException("Listener was cancelled $consumerTag")
+        logger.error("Consumer $consumerTag of $queue was cancelled by the broker")
+        try {
+            onCancelled()
+        } catch (expected: Throwable) {
+            logger.error("Failed to start recreation of the consumer of $queue", expected)
+        }
     }
 }

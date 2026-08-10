@@ -85,8 +85,12 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
   the optional `errorHandler` sees the event and the failure before it is rethrown),
   serializes publishes on one channel with a mutex (a confirm covers everything unconfirmed on the
   channel, not one message) and reopens connection and channel after a failure. `AutoCloseable`
-- `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support
-- `ListenerDeliveryCallback`: Handles message delivery with automatic retry logic
+- `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support. A consumer the broker
+  cancels behind our back (deleted queue, lost node) is rebuilt from scratch — fresh channel,
+  declarations and bindings — retrying every 5s until the broker accepts it
+- `ListenerDeliveryCallback`: Handles message delivery with automatic retry logic; a queue without
+  retries (`maxRetries == 0`) holds a failing delivery unacked for `retryDelay` before the
+  requeueing nack, so the redelivery loop is paced instead of hot
 - `QueueConfig`: Configuration for queue behavior (prefetch, maxRetries, retryDelay)
 - `ConsumerMetrics`: The consumer side of the observability, handed to `RabbitQueue` — time a delivery
   waited for a free worker and time the subscriber ran, and every ending other than an ack (`failed`

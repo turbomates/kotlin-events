@@ -7,11 +7,18 @@ import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.Telemetry
+import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 
 class RabbitQueue(
     private val config: Config,
@@ -23,31 +30,12 @@ class RabbitQueue(
     private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
     private val errorHandler: (Throwable) -> Unit = {}
 ) {
-    private val channels = mutableListOf<Channel>()
+    private val logger by lazy { LoggerFactory.getLogger(javaClass) }
+    private val channels = CopyOnWriteArrayList<Channel>()
     private val connections = (1..config.connectionsCount).map { config.connectionFactory.newConnection() }
     // A child of the caller's scope shared by every consumer's workers: cancelling
     // the caller's scope stops them, and close() cancels just this scope.
     private val workerScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-    val consumer: Channel.(QueueConfig, Map<Event.Key<out Event>, EventSubscriber<out Event>>) -> Unit =
-        { config, subscribers ->
-            config.validateConcurrency()
-            basicQos(config.prefetchCount)
-            basicConsume(
-                config.queueName,
-                false,
-                ListenerDeliveryCallback(
-                    ChannelInfo(config.queueName, this@RabbitQueue.config.exchange, this),
-                    config,
-                    subscribers,
-                    json,
-                    telemetryService,
-                    workerScope,
-                    metrics,
-                    errorHandler
-                ),
-                ListenerCancelCallback()
-            )
-        }
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
@@ -81,10 +69,9 @@ class RabbitQueue(
             queueType = queueType,
             maxConcurrency = config.defaultMaxConcurrency,
         )
-        val channel = channel(queueConfig)
-        channel.run { queueConfig.dlxQueue() }
-        channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
-        channel.consumer(queueConfig, mapOf(key to this))
+        consume(queueConfig, mapOf(key to this)) { channel ->
+            channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
+        }
     }
 
     private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>) {
@@ -98,11 +85,80 @@ class RabbitQueue(
             queueType = queueType,
             maxConcurrency = config.defaultMaxConcurrency,
         )
-        val channel = channel(queueConfig)
-        subscribers().forEach { subscriber ->
-            channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
+        consume(queueConfig, subscribers().associateBy { it.key }) { channel ->
+            subscribers().forEach { subscriber ->
+                channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
+            }
         }
-        channel.consumer(queueConfig, subscribers().associateBy { it.key })
+    }
+
+    /**
+     * Everything a consumer is made of, in one place so it can be done again from scratch: a fresh
+     * channel with the queues declared, the bindings of the caller, and the subscription itself.
+     * The cancel callback re-enters through [recreate] when the broker cancels the consumer.
+     */
+    private fun consume(
+        queueConfig: QueueConfig,
+        subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
+        bind: (Channel) -> Unit
+    ) {
+        queueConfig.validateConcurrency()
+        val channel = channel(queueConfig)
+        bind(channel)
+        channel.basicQos(queueConfig.prefetchCount)
+        val deliveries = ListenerDeliveryCallback(
+            ChannelInfo(queueConfig.queueName, config.exchange, channel),
+            queueConfig,
+            subscribers,
+            json,
+            telemetryService,
+            workerScope,
+            metrics,
+            errorHandler
+        )
+        channel.basicConsume(
+            queueConfig.queueName,
+            false,
+            deliveries,
+            ListenerCancelCallback(queueConfig.queueName) {
+                recreate(channel, deliveries, queueConfig, subscribers, bind)
+            }
+        )
+    }
+
+    /**
+     * The broker cancelled the consumer behind our back — the queue was deleted or lost its node.
+     * The channel is still open but idle, so without this the queue is never read again. The old
+     * workers drain what they already buffered, then the whole consumer is built anew, retrying
+     * until the broker accepts it or the scope shuts down.
+     */
+    private fun recreate(
+        cancelled: Channel,
+        deliveries: ListenerDeliveryCallback,
+        queueConfig: QueueConfig,
+        subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
+        bind: (Channel) -> Unit
+    ) {
+        workerScope.launch {
+            deliveries.stop()
+            channels.remove(cancelled)
+            runCatching { cancelled.close() }
+            while (isActive) {
+                try {
+                    consume(queueConfig, subscribers, bind)
+                    logger.info("Consumer of ${queueConfig.queueName} was recreated")
+                    return@launch
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (expected: Throwable) {
+                    logger.error(
+                        "Failed to recreate consumer of ${queueConfig.queueName}, next attempt in $recreateDelay",
+                        expected
+                    )
+                    delay(recreateDelay)
+                }
+            }
+        }
     }
 
     context(channel: Channel)
@@ -162,6 +218,7 @@ class RabbitQueue(
     companion object {
         const val DLX_POSTFIX = "_dlx"
         const val PARKING_LOT_POSTFIX = "_pl"
+        private val recreateDelay = 5.seconds
     }
 }
 
