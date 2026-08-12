@@ -17,6 +17,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
@@ -50,12 +51,18 @@ class RabbitQueue(
 
     private fun channel(queueConfig: QueueConfig): Channel {
         val channel = connections.random().createChannel()
+        try {
+            // The queues below bind to this exchange, so it has to exist before them. A consumer only
+            // application has no publisher to declare it, and the publisher of an application that has
+            // one declares it when it publishes, which may be long after the queues are bound.
+            channel.exchangeDeclare(config.exchange, BuiltinExchangeType.TOPIC, true)
+            channel.apply { queueConfig.dlxQueue() }
+        } catch (expected: Throwable) {
+            runCatching { channel.close() }
+            throw expected
+        }
         channels.add(channel)
-        // The queues below bind to this exchange, so it has to exist before them. A consumer only
-        // application has no publisher to declare it, and the publisher of an application that has
-        // one declares it when it publishes, which may be long after the queues are bound.
-        channel.exchangeDeclare(config.exchange, BuiltinExchangeType.TOPIC, true)
-        return channel.apply { queueConfig.dlxQueue() }
+        return channel
     }
 
     private fun EventSubscriber<out Event>.consumers(queuesConfig: List<QueueConfig>) {
@@ -85,8 +92,11 @@ class RabbitQueue(
             queueType = queueType,
             maxConcurrency = config.defaultMaxConcurrency,
         )
-        consume(queueConfig, subscribers().associateBy { it.key }) { channel ->
-            subscribers().forEach { subscriber ->
+        // Captured once: an implementation is free to build a fresh list per call, and the
+        // bindings — re-derived by every recreation — must not diverge from the map consuming them.
+        val subscribers = subscribers()
+        consume(queueConfig, subscribers.associateBy { it.key }) { channel ->
+            subscribers.forEach { subscriber ->
                 channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
             }
         }
@@ -104,26 +114,37 @@ class RabbitQueue(
     ) {
         queueConfig.validateConcurrency()
         val channel = channel(queueConfig)
-        bind(channel)
-        channel.basicQos(queueConfig.prefetchCount)
-        val deliveries = ListenerDeliveryCallback(
-            ChannelInfo(queueConfig.queueName, config.exchange, channel),
-            queueConfig,
-            subscribers,
-            json,
-            telemetryService,
-            workerScope,
-            metrics,
-            errorHandler
-        )
-        channel.basicConsume(
-            queueConfig.queueName,
-            false,
-            deliveries,
-            ListenerCancelCallback(queueConfig.queueName) {
-                recreate(channel, deliveries, queueConfig, subscribers, bind)
-            }
-        )
+        var deliveries: ListenerDeliveryCallback? = null
+        try {
+            bind(channel)
+            channel.basicQos(queueConfig.prefetchCount)
+            val callback = ListenerDeliveryCallback(
+                ChannelInfo(queueConfig.queueName, config.exchange, channel),
+                queueConfig,
+                subscribers,
+                json,
+                telemetryService,
+                workerScope,
+                metrics,
+                errorHandler
+            )
+            deliveries = callback
+            channel.basicConsume(
+                queueConfig.queueName,
+                false,
+                callback,
+                ListenerCancelCallback(queueConfig.queueName) {
+                    recreate(channel, callback, queueConfig, subscribers, bind)
+                }
+            )
+        } catch (expected: Throwable) {
+            // A half-built consumer must not leak: recreate() retries this whole function every
+            // few seconds and would pile up open channels and idle workers otherwise.
+            deliveries?.close()
+            channels.remove(channel)
+            runCatching { channel.close() }
+            throw expected
+        }
     }
 
     /**
@@ -140,7 +161,11 @@ class RabbitQueue(
         bind: (Channel) -> Unit
     ) {
         workerScope.launch {
-            deliveries.stop()
+            // The drain is bounded: a subscriber hung on a buffered delivery must not hold the
+            // recreation hostage — that is the very "queue is never read again" this function
+            // exists to prevent. Whatever is still in flight after the timeout fails its ack on
+            // the closed channel and comes back with the redelivery.
+            withTimeoutOrNull(drainTimeout) { deliveries.stop() }
             channels.remove(cancelled)
             runCatching { cancelled.close() }
             while (isActive) {
@@ -219,6 +244,7 @@ class RabbitQueue(
         const val DLX_POSTFIX = "_dlx"
         const val PARKING_LOT_POSTFIX = "_pl"
         private val recreateDelay = 5.seconds
+        private val drainTimeout = 30.seconds
     }
 }
 

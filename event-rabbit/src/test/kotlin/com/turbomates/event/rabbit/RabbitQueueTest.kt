@@ -108,14 +108,23 @@ class RabbitQueueTest {
         )
         rabbitQueue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 0, retryDelay = 1.seconds)))
         publisher.publish(TestEvent("test"))
+        // The measurement window opens at the first delivery, not at the publish — a slow
+        // container start must not eat into it.
+        withTimeout(30.seconds) {
+            while (subscriber.count < 1) {
+                delay(100)
+            }
+        }
+        val delivered = subscriber.count
         delay(5.seconds)
         rabbitQueue.close()
+        val redeliveries = subscriber.count - delivered
 
         // The nack requeues, so the message keeps coming back — but a worker holds it for
         // retryDelay before each nack. Without the pause the loop is hot and the count would be
         // in the thousands after five seconds.
-        assertTrue(subscriber.count >= 2, "message was not redelivered, count=${subscriber.count}")
-        assertTrue(subscriber.count <= 10, "requeue loop is not paced, count=${subscriber.count}")
+        assertTrue(redeliveries >= 1, "message was not redelivered, count=${subscriber.count}")
+        assertTrue(redeliveries <= 10, "requeue loop is not paced, count=${subscriber.count}")
     }
 
     @Test

@@ -65,12 +65,19 @@ internal class ListenerDeliveryCallback(
     }
 
     /**
-     * The consumer is gone and no new deliveries arrive: stops the workers once they drain what is
-     * already buffered. Those deliveries are still unacked on the channel, so they settle as usual
-     * for as long as it stays open.
+     * The consumer is gone and no new deliveries arrive: the workers exit once they drain what is
+     * already buffered.
+     */
+    fun close() {
+        deliveries.close()
+    }
+
+    /**
+     * [close], then wait for the drain. The buffered deliveries are still unacked on the channel,
+     * so they settle as usual for as long as it stays open.
      */
     suspend fun stop() {
-        deliveries.close()
+        close()
         workers.joinAll()
     }
 
