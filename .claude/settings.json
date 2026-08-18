@@ -43,7 +43,8 @@
       "Bash(javap *)",
       "Bash(echo \"EXIT: $?\")",
       "Bash(echo \"rc=$?\")",
-      "Bash(unzip -o -q *)"
+      "Bash(unzip -o -q *)",
+      "Bash(./gradlew *)"
     ],
     "deny": [],
     "ask": []

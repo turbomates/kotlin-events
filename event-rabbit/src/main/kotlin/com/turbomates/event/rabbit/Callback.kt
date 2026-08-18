@@ -2,8 +2,11 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.AMQP
 import com.rabbitmq.client.CancelCallback
+import com.rabbitmq.client.ConsumerShutdownSignalCallback
 import com.rabbitmq.client.DeliverCallback
 import com.rabbitmq.client.Delivery
+import com.rabbitmq.client.ShutdownSignalException
+import java.util.concurrent.atomic.AtomicBoolean
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
@@ -14,6 +17,8 @@ import kotlin.time.TimeSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -36,23 +41,22 @@ internal class ListenerDeliveryCallback(
     // prefetchCount unacked messages, so at most prefetchCount deliveries ever sit
     // in the buffer waiting for a free worker. trySend therefore never rejects.
     private val deliveries = Channel<Buffered>(Channel.UNLIMITED)
+    private val recreated = AtomicBoolean(false)
 
-    init {
-        // One worker per unit of concurrency: a subscriber processes at most
-        // maxConcurrency messages at once, and with maxConcurrency == 1 a single
-        // worker draining the channel preserves delivery order (FIFO).
-        repeat(config.maxConcurrency) {
-            scope.launch {
-                for (delivery in deliveries) {
-                    val waited = delivery.enqueuedAt.elapsedNow()
-                    try {
-                        process(delivery.message, waited)
-                    } catch (cancellation: CancellationException) {
-                        throw cancellation
-                    } catch (expected: Throwable) {
-                        logger.error("Failed to process delivery from ${config.queueName}", expected)
-                        errorHandler(expected)
-                    }
+    // One worker per unit of concurrency: a subscriber processes at most
+    // maxConcurrency messages at once, and with maxConcurrency == 1 a single
+    // worker draining the channel preserves delivery order (FIFO).
+    private val workers = List(config.maxConcurrency) {
+        scope.launch {
+            for (delivery in deliveries) {
+                val waited = delivery.enqueuedAt.elapsedNow()
+                try {
+                    process(delivery.message, waited)
+                } catch (cancellation: CancellationException) {
+                    throw cancellation
+                } catch (expected: Throwable) {
+                    logger.error("Failed to process delivery from ${config.queueName}", expected)
+                    errorHandler(expected)
                 }
             }
         }
@@ -63,6 +67,38 @@ internal class ListenerDeliveryCallback(
         // channel until one of the maxConcurrency workers is free to process it.
         // The mark it carries is what ConsumerMetrics reports as `waited`.
         deliveries.trySend(Buffered(message, TimeSource.Monotonic.markNow()))
+    }
+
+    /**
+     * The consumer is gone and no new deliveries arrive: the workers exit once they drain what is
+     * already buffered. Those deliveries are still unacked on the channel, so they settle as usual
+     * for as long as it stays open.
+     */
+    fun close() {
+        deliveries.close()
+    }
+
+    /** Waits for the workers to finish the buffer [close] left them. */
+    suspend fun awaitDrain() {
+        workers.joinAll()
+    }
+
+    /**
+     * True for the first caller only. The end of a consumer can be reported twice — as a cancel and
+     * as the shutdown of its channel — and each of them alone is reason enough to rebuild it. Two
+     * rebuilds of the same one would leave two consumers on the queue, handling everything twice.
+     */
+    fun claimRecreation(): Boolean = recreated.compareAndSet(false, true)
+
+    /**
+     * Gives up on the drain and stops the workers where they are, for a subscriber that hangs long
+     * enough to hold up everything waiting behind it. Best effort: a subscriber that blocks its
+     * thread instead of suspending only stops when it returns. Whatever was in flight settles
+     * nowhere and comes back with the redelivery.
+     */
+    fun cancel() {
+        close()
+        workers.forEach { it.cancel() }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -125,6 +161,11 @@ internal class ListenerDeliveryCallback(
                             report { metrics.retried(queue, routingKey, retries) }
                         }
                     } else {
+                        // There are no retry queues to pace the redelivery: a bare nack puts the
+                        // message back at the head of the queue and it comes back immediately — a
+                        // hot loop for as long as it keeps failing. The worker holds the delivery
+                        // unacked for retryDelay instead: only this stream waits, its order stays.
+                        delay(config.retryDelay)
                         channel.basicNack(message.envelope.deliveryTag, false, true)
                         report { metrics.requeued(queue, routingKey) }
                     }
@@ -196,10 +237,69 @@ internal class ListenerDeliveryCallback(
 }
 
 
-internal class ListenerCancelCallback : CancelCallback {
+/**
+ * The broker cancelled the consumer without being asked to — its queue was deleted or lost its
+ * node. Runs on a thread of the amqp client, so it must not throw and must not block: it only
+ * reports and hands recreation over to [onCancelled], otherwise the queue silently stops being
+ * read for the rest of the process's life.
+ */
+internal class ListenerCancelCallback(
+    private val queue: String,
+    private val onCancelled: () -> Unit
+) : CancelCallback {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     override fun handle(consumerTag: String?) {
-        logger.error("Listener was cancelled $consumerTag")
-        throw InterruptedException("Listener was cancelled $consumerTag")
+        logger.error("Consumer $consumerTag of $queue was cancelled by the broker")
+        try {
+            onCancelled()
+        } catch (expected: Throwable) {
+            logger.error("Failed to start recreation of the consumer of $queue", expected)
+        }
+    }
+}
+
+/**
+ * The other way a consumer ends: no `basic.cancel`, the channel under it went down. An error of the
+ * channel itself — arguments of a queue that no longer match, an ack of a tag the broker does not
+ * know — closes it, and the consumer is gone with it just as silently.
+ *
+ * Not every shutdown is ours to repair, so only the third case reaches [onLost]:
+ * - we closed the channel ourselves, which is how every consumer ends normally;
+ * - the connection went down, and the automatic recovery of the client brings its channels,
+ *   topology and consumers back on its own — rebuilding on top of that would leave two consumers on
+ *   the queue. An application that turned that recovery off gets an error instead: this class can
+ *   not stand in for it, the connections of [RabbitQueue] are opened once and never reopened;
+ * - the channel went down on its own, which nobody else recovers — that one is rebuilt.
+ *
+ * Runs on a thread of the amqp client, so like [ListenerCancelCallback] it decides and hands over.
+ */
+internal class ListenerShutdownCallback(
+    private val queue: String,
+    private val recoversConnections: Boolean,
+    private val onLost: () -> Unit
+) : ConsumerShutdownSignalCallback {
+    private val logger by lazy { LoggerFactory.getLogger(javaClass) }
+    override fun handleShutdownSignal(consumerTag: String?, signal: ShutdownSignalException) {
+        if (signal.isInitiatedByApplication) {
+            return
+        }
+        if (signal.isHardError) {
+            if (recoversConnections) {
+                logger.warn("Connection of $queue went down, the client recovers consumer $consumerTag itself")
+            } else {
+                logger.error(
+                    "Connection of $queue went down and automatic recovery is off, " +
+                        "consumer $consumerTag is lost until the application restarts",
+                    signal
+                )
+            }
+            return
+        }
+        logger.error("Consumer $consumerTag of $queue went down with its channel", signal)
+        try {
+            onLost()
+        } catch (expected: Throwable) {
+            logger.error("Failed to start recreation of the consumer of $queue", expected)
+        }
     }
 }
