@@ -152,6 +152,10 @@ class RabbitQueue(
      * The channel is still open but idle, so without this the queue is never read again. The old
      * workers drain what they already buffered, then the whole consumer is built anew, retrying
      * until the broker accepts it or the scope shuts down.
+     *
+     * Every attempt is paced by [recreateDelay], the successful one included: a consumer the broker
+     * accepts and cancels right back — a queue that keeps expiring, one being deleted in a loop —
+     * would otherwise churn a channel and its declarations as fast as the broker answers.
      */
     private fun recreate(
         cancelled: Channel,
@@ -161,14 +165,19 @@ class RabbitQueue(
         bind: (Channel) -> Unit
     ) {
         workerScope.launch {
+            deliveries.close()
             // The drain is bounded: a subscriber hung on a buffered delivery must not hold the
             // recreation hostage — that is the very "queue is never read again" this function
-            // exists to prevent. Whatever is still in flight after the timeout fails its ack on
-            // the closed channel and comes back with the redelivery.
-            withTimeoutOrNull(drainTimeout) { deliveries.stop() }
+            // exists to prevent. Its workers are dropped instead of left behind, or a queue that
+            // is cancelled over and over accumulates a set of them per recreation.
+            if (withTimeoutOrNull(drainTimeout) { deliveries.awaitDrain() } == null) {
+                logger.error("Workers of ${queueConfig.queueName} outlived $drainTimeout, cancelling them")
+                deliveries.cancel()
+            }
             channels.remove(cancelled)
             runCatching { cancelled.close() }
             while (isActive) {
+                delay(recreateDelay)
                 try {
                     consume(queueConfig, subscribers, bind)
                     logger.info("Consumer of ${queueConfig.queueName} was recreated")
@@ -180,7 +189,6 @@ class RabbitQueue(
                         "Failed to recreate consumer of ${queueConfig.queueName}, next attempt in $recreateDelay",
                         expected
                     )
-                    delay(recreateDelay)
                 }
             }
         }

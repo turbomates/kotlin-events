@@ -66,19 +66,27 @@ internal class ListenerDeliveryCallback(
 
     /**
      * The consumer is gone and no new deliveries arrive: the workers exit once they drain what is
-     * already buffered.
+     * already buffered. Those deliveries are still unacked on the channel, so they settle as usual
+     * for as long as it stays open.
      */
     fun close() {
         deliveries.close()
     }
 
-    /**
-     * [close], then wait for the drain. The buffered deliveries are still unacked on the channel,
-     * so they settle as usual for as long as it stays open.
-     */
-    suspend fun stop() {
-        close()
+    /** Waits for the workers to finish the buffer [close] left them. */
+    suspend fun awaitDrain() {
         workers.joinAll()
+    }
+
+    /**
+     * Gives up on the drain and stops the workers where they are, for a subscriber that hangs long
+     * enough to hold up everything waiting behind it. Best effort: a subscriber that blocks its
+     * thread instead of suspending only stops when it returns. Whatever was in flight settles
+     * nowhere and comes back with the redelivery.
+     */
+    fun cancel() {
+        close()
+        workers.forEach { it.cancel() }
     }
 
     @Suppress("UNCHECKED_CAST")
