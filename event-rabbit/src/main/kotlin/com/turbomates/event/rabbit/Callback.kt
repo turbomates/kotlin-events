@@ -2,8 +2,11 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.AMQP
 import com.rabbitmq.client.CancelCallback
+import com.rabbitmq.client.ConsumerShutdownSignalCallback
 import com.rabbitmq.client.DeliverCallback
 import com.rabbitmq.client.Delivery
+import com.rabbitmq.client.ShutdownSignalException
+import java.util.concurrent.atomic.AtomicBoolean
 import com.turbomates.event.Event
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
@@ -37,6 +40,7 @@ internal class ListenerDeliveryCallback(
     // prefetchCount unacked messages, so at most prefetchCount deliveries ever sit
     // in the buffer waiting for a free worker. trySend therefore never rejects.
     private val deliveries = Channel<Buffered>(Channel.UNLIMITED)
+    private val recreated = AtomicBoolean(false)
 
     // One worker per unit of concurrency: a subscriber processes at most
     // maxConcurrency messages at once, and with maxConcurrency == 1 a single
@@ -77,6 +81,13 @@ internal class ListenerDeliveryCallback(
     suspend fun awaitDrain() {
         workers.joinAll()
     }
+
+    /**
+     * True for the first caller only. The end of a consumer can be reported twice — as a cancel and
+     * as the shutdown of its channel — and each of them alone is reason enough to rebuild it. Two
+     * rebuilds of the same one would leave two consumers on the queue, handling everything twice.
+     */
+    fun claimRecreation(): Boolean = recreated.compareAndSet(false, true)
 
     /**
      * Gives up on the drain and stops the workers where they are, for a subscriber that hangs long
@@ -240,6 +251,52 @@ internal class ListenerCancelCallback(
         logger.error("Consumer $consumerTag of $queue was cancelled by the broker")
         try {
             onCancelled()
+        } catch (expected: Throwable) {
+            logger.error("Failed to start recreation of the consumer of $queue", expected)
+        }
+    }
+}
+
+/**
+ * The other way a consumer ends: no `basic.cancel`, the channel under it went down. An error of the
+ * channel itself — arguments of a queue that no longer match, an ack of a tag the broker does not
+ * know — closes it, and the consumer is gone with it just as silently.
+ *
+ * Not every shutdown is ours to repair, so only the third case reaches [onLost]:
+ * - we closed the channel ourselves, which is how every consumer ends normally;
+ * - the connection went down, and the automatic recovery of the client brings its channels,
+ *   topology and consumers back on its own — rebuilding on top of that would leave two consumers on
+ *   the queue. An application that turned that recovery off gets an error instead: this class can
+ *   not stand in for it, the connections of [RabbitQueue] are opened once and never reopened;
+ * - the channel went down on its own, which nobody else recovers — that one is rebuilt.
+ *
+ * Runs on a thread of the amqp client, so like [ListenerCancelCallback] it decides and hands over.
+ */
+internal class ListenerShutdownCallback(
+    private val queue: String,
+    private val recoversConnections: Boolean,
+    private val onLost: () -> Unit
+) : ConsumerShutdownSignalCallback {
+    private val logger by lazy { LoggerFactory.getLogger(javaClass) }
+    override fun handleShutdownSignal(consumerTag: String?, signal: ShutdownSignalException) {
+        if (signal.isInitiatedByApplication) {
+            return
+        }
+        if (signal.isHardError) {
+            if (recoversConnections) {
+                logger.warn("Connection of $queue went down, the client recovers consumer $consumerTag itself")
+            } else {
+                logger.error(
+                    "Connection of $queue went down and automatic recovery is off, " +
+                        "consumer $consumerTag is lost until the application restarts",
+                    signal
+                )
+            }
+            return
+        }
+        logger.error("Consumer $consumerTag of $queue went down with its channel", signal)
+        try {
+            onLost()
         } catch (expected: Throwable) {
             logger.error("Failed to start recreation of the consumer of $queue", expected)
         }

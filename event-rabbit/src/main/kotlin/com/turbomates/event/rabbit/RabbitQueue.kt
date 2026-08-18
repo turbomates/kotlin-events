@@ -135,6 +135,12 @@ class RabbitQueue(
                 callback,
                 ListenerCancelCallback(queueConfig.queueName) {
                     recreate(channel, callback, queueConfig, subscribers, bind)
+                },
+                ListenerShutdownCallback(
+                    queueConfig.queueName,
+                    config.connectionFactory.isAutomaticRecoveryEnabled
+                ) {
+                    recreate(channel, callback, queueConfig, subscribers, bind)
                 }
             )
         } catch (expected: Throwable) {
@@ -148,10 +154,11 @@ class RabbitQueue(
     }
 
     /**
-     * The broker cancelled the consumer behind our back — the queue was deleted or lost its node.
-     * The channel is still open but idle, so without this the queue is never read again. The old
-     * workers drain what they already buffered, then the whole consumer is built anew, retrying
-     * until the broker accepts it or the scope shuts down.
+     * The consumer ended without being asked to — cancelled by the broker because its queue was
+     * deleted or lost its node, or taken down with the channel under it. Either way nothing reads
+     * the queue any more, and neither the channel nor the client brings it back. The old workers
+     * drain what they already buffered, then the whole consumer is built anew, retrying until the
+     * broker accepts it or the scope shuts down.
      *
      * Every attempt is paced by [recreateDelay], the successful one included: a consumer the broker
      * accepts and cancels right back — a queue that keeps expiring, one being deleted in a loop —
@@ -164,6 +171,11 @@ class RabbitQueue(
         subscribers: Map<Event.Key<out Event>, EventSubscriber<out Event>>,
         bind: (Channel) -> Unit
     ) {
+        // The end of one consumer can be reported both as a cancel and as a shutdown of its
+        // channel; it is rebuilt once.
+        if (!deliveries.claimRecreation()) {
+            return
+        }
         workerScope.launch {
             deliveries.close()
             // The drain is bounded: a subscriber hung on a buffered delivery must not hold the
