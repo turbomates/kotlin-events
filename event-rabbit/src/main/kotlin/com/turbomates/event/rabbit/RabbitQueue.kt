@@ -29,7 +29,8 @@ class RabbitQueue(
     private val telemetryService: Telemetry,
     private val queueType: QueueType? = null,
     private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
-    private val errorHandler: (Throwable) -> Unit = {}
+    private val errorHandler: (Throwable) -> Unit = {},
+    private val boundRoutes: BoundRoutes? = null
 ) {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     private val channels = CopyOnWriteArrayList<Channel>()
@@ -40,12 +41,16 @@ class RabbitQueue(
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
-        eventsSubscribers.forEach { eventsSubscriber ->
+        val bound = eventsSubscribers.map { eventsSubscriber ->
             eventsSubscriber.consumers(queuesConfig)
-
-        }
-        eventSubscribers.forEach { eventSubscriber ->
+        } + eventSubscribers.map { eventSubscriber ->
             eventSubscriber.consumers(queuesConfig)
+        }
+        // A queue name comes from the name of its subscriber, but two of them may answer the same
+        // name, and then the queue is shared and its routes are the union. Syncing a queue once its
+        // subscribers are all set up keeps one of the two from unbinding the routes of the other.
+        bound.groupBy(BoundQueue::queue, BoundQueue::routes).forEach { (queue, routes) ->
+            syncBindings(queue, routes.flatten().toSet())
         }
     }
 
@@ -65,7 +70,7 @@ class RabbitQueue(
         return channel
     }
 
-    private fun EventSubscriber<out Event>.consumers(queuesConfig: List<QueueConfig>) {
+    private fun EventSubscriber<out Event>.consumers(queuesConfig: List<QueueConfig>): BoundQueue {
         val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(
             queueName(
                 config.queuePrefix
@@ -76,12 +81,14 @@ class RabbitQueue(
             queueType = queueType,
             maxConcurrency = config.defaultMaxConcurrency,
         )
+        val route = key.routeName()
         consume(queueConfig, mapOf(key to this)) { channel ->
-            channel.queueBind(queueConfig.queueName, config.exchange, key.routeName())
+            channel.queueBind(queueConfig.queueName, config.exchange, route)
         }
+        return BoundQueue(queueConfig.queueName, setOf(route))
     }
 
-    private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>) {
+    private fun EventsSubscriber.consumers(queuesConfig: List<QueueConfig>): BoundQueue {
         val queueConfig = queuesConfig.find { it.queueName == queueName(config.queuePrefix) } ?: QueueConfig(
             queueName(
                 config.queuePrefix
@@ -92,14 +99,17 @@ class RabbitQueue(
             queueType = queueType,
             maxConcurrency = config.defaultMaxConcurrency,
         )
-        // Captured once: an implementation is free to build a fresh list per call, and the
-        // bindings — re-derived by every recreation — must not diverge from the map consuming them.
+        // Captured once: an implementation is free to build a fresh list per call, and the routes —
+        // both the ones bound here, re-derived by every recreation, and the ones syncBindings
+        // measures the queue against — must not diverge from the map consuming them.
         val subscribers = subscribers()
+        val routes = subscribers.map { it.key.routeName() }.toSet()
         consume(queueConfig, subscribers.associateBy { it.key }) { channel ->
-            subscribers.forEach { subscriber ->
-                channel.queueBind(queueConfig.queueName, config.exchange, subscriber.key.routeName())
+            routes.forEach { route ->
+                channel.queueBind(queueConfig.queueName, config.exchange, route)
             }
         }
+        return BoundQueue(queueConfig.queueName, routes)
     }
 
     /**
@@ -206,6 +216,36 @@ class RabbitQueue(
         }
     }
 
+    // queueBind only ever adds: a subscription dropped since the last start leaves its binding
+    // behind, and the queue keeps receiving an event nothing here handles — one whose type this
+    // application no longer knows does not even decode and ends up in the parking lot. With
+    // [boundRoutes] given, every route bound to the queue from the exchange and not in [routes] —
+    // all the routes of the queue, from every subscriber that shares it — is unbound, bindings made
+    // by hand included; without it nothing is touched. Best effort: a broker that does not answer is
+    // logged and left alone, the consumer starts either way.
+    private fun syncBindings(queue: String, routes: Set<String>) {
+        if (boundRoutes == null) return
+        try {
+            val stale = boundRoutes.of(queue, config.exchange) - routes
+            if (stale.isEmpty()) return
+            // A channel of its own: an unbind that fails closes the channel it runs on, and taking
+            // the consumer of the queue down with it would cost more than the stale binding.
+            connections.random().createChannel().use { channel ->
+                stale.forEach { route ->
+                    logger.info("Unbinding stale route $route of $queue from ${config.exchange}")
+                    channel.queueUnbind(queue, config.exchange, route)
+                }
+            }
+        } catch (interrupted: InterruptedException) {
+            // The HTTP call of a BoundRoutes is a blocking one: hand the interruption back to
+            // whoever owns the thread that called run() instead of ending it here.
+            Thread.currentThread().interrupt()
+            logger.error("Interrupted while syncing the bindings of $queue", interrupted)
+        } catch (expected: Exception) {
+            logger.error("Failed to sync the bindings of $queue", expected)
+        }
+    }
+
     context(channel: Channel)
     private fun QueueConfig.dlxQueue() {
         val queueTypeArguments = mapOf("x-queue-type" to resolvedQueueType().value)
@@ -258,6 +298,9 @@ class RabbitQueue(
         channels.forEach { runCatching { it.close() } }
         connections.forEach { runCatching { it.close() } }
     }
+
+    // A queue and everything its subscriber bound it to, what [syncBindings] measures against.
+    private data class BoundQueue(val queue: String, val routes: Set<String>)
 
     data class ChannelInfo(val queue: String, val exchange: String, val channel: Channel)
     companion object {

@@ -96,6 +96,12 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
   retries (`maxRetries == 0`) holds a failing delivery unacked for `retryDelay` before the
   requeueing nack, so the redelivery loop is paced instead of hot
 - `QueueConfig`: Configuration for queue behavior (prefetch, maxRetries, retryDelay)
+- `BoundRoutes`: The routes a queue is bound to, handed to `RabbitQueue` to unbind on start
+  everything bound to the queue from the exchange that no subscriber asks for any more — `queueBind`
+  only ever adds, so a dropped subscription otherwise keeps its route forever. Off by default (null),
+  and it unbinds routes bound by hand too. `ManagementApi` is the implementation, over the HTTP API
+  of the management plugin, because AMQP 0-9-1 has no command that lists bindings; the unbinding
+  itself is AMQP, so read access is enough. Failures are logged, the consumer starts either way
 - `ConsumerMetrics`: The consumer side of the observability, handed to `RabbitQueue` — time a delivery
   waited for a free worker and time the subscriber ran, and every ending other than an ack (`failed`
   followed by `retried`, `parked` or `requeued`, plus `noSubscriber`) for the application registry
