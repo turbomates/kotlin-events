@@ -9,6 +9,7 @@ import com.turbomates.event.SubscribersRegistry
 import com.turbomates.event.subscriber
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -86,6 +87,105 @@ class RabbitQueueTest {
         rabbitQueue.close()
 
         assertEquals(4, subscriber.count)
+    }
+
+    @Test
+    fun `requeue without retries is paced by retryDelay`() = runBlocking {
+        val registry = SubscribersRegistry()
+        val subscriber = object : EventsSubscriber {
+            override fun name(): String {
+                return "sportsbook.RequeueSubscriber"
+            }
+
+            override fun subscribers(): List<EventSubscriber<out Event>> {
+                return listOf(TestEvent.subscriber {
+                    count++
+                    throw Exception("test")
+                })
+            }
+
+            var count = 0
+        }
+        registry.registry(subscriber)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val rabbitQueue = RabbitQueue(
+            Config(factory, "test", "test"),
+            Json,
+            registry,
+            scope = this,
+            telemetryService = NoOpTelemetry()
+        )
+        rabbitQueue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 0, retryDelay = 1.seconds)))
+        publisher.publish(TestEvent("test"))
+        // The measurement window opens at the first delivery, not at the publish — a slow
+        // container start must not eat into it.
+        withTimeout(30.seconds) {
+            while (subscriber.count < 1) {
+                delay(100)
+            }
+        }
+        val delivered = subscriber.count
+        delay(5.seconds)
+        rabbitQueue.close()
+        val redeliveries = subscriber.count - delivered
+
+        // The nack requeues, so the message keeps coming back — but a worker holds it for
+        // retryDelay before each nack. Without the pause the loop is hot and the count would be
+        // in the thousands after five seconds.
+        assertTrue(redeliveries >= 1, "message was not redelivered, count=${subscriber.count}")
+        assertTrue(redeliveries <= 10, "requeue loop is not paced, count=${subscriber.count}")
+    }
+
+    @Test
+    fun `consumer is recreated after the broker cancels it`() = runBlocking {
+        val registry = SubscribersRegistry()
+        val subscriber = object : EventsSubscriber {
+            override fun name(): String {
+                return "sportsbook.RecreateSubscriber"
+            }
+
+            override fun subscribers(): List<EventSubscriber<out Event>> {
+                return listOf(TestEvent.subscriber {
+                    count++
+                })
+            }
+
+            var count = 0
+        }
+        registry.registry(subscriber)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val rabbitQueue = RabbitQueue(
+            Config(factory, "test", "test"),
+            Json,
+            registry,
+            scope = this,
+            telemetryService = NoOpTelemetry()
+        )
+        val queueName = subscriber.queueName("test")
+        rabbitQueue.run(listOf(QueueConfig(queueName, maxRetries = 3, retryDelay = 1.seconds)))
+        publisher.publish(TestEvent("first"))
+        withTimeout(30.seconds) {
+            while (subscriber.count < 1) {
+                delay(100)
+            }
+        }
+
+        // Deleting the queue makes the broker cancel the consumer.
+        factory.newConnection().use { connection ->
+            connection.createChannel().use { it.queueDelete(queueName) }
+        }
+
+        // The recreated consumer declares the queue and its bindings again, but a publish that
+        // happens before it does is dropped by the exchange — so keep publishing until one lands.
+        withTimeout(60.seconds) {
+            while (subscriber.count < 2) {
+                publisher.publish(TestEvent("second"))
+                delay(500)
+            }
+        }
+        rabbitQueue.close()
+
+        assertTrue(subscriber.count >= 2)
     }
 
     @Test

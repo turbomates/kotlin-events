@@ -59,8 +59,8 @@ interface ConsumerMetrics {
 
     /**
      * The failed delivery was nacked back into its own queue, because the queue has no retries
-     * configured (`maxRetries == 0`). It is redelivered immediately and as often as it keeps
-     * failing.
+     * configured (`maxRetries == 0`). The worker held it unacked for `retryDelay` before the nack,
+     * so the redelivery is paced — but it comes back for as long as it keeps failing.
      */
     fun requeued(queue: String, routingKey: String) {}
 }
