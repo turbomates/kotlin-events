@@ -46,7 +46,7 @@ class EventCatalogProcessor(
 ) : SymbolProcessor {
     private val events = sortedSetOf<String>()
     private val files = mutableSetOf<KSFile>()
-    private var generated = false
+    private var isGenerated = false
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
         val event = resolver.type(EVENT) ?: return emptyList()
@@ -63,10 +63,11 @@ class EventCatalogProcessor(
         if (classKind == ClassKind.OBJECT && !isCompanionObject &&
             key.isAssignableFrom(asStarProjectedType()) && declaresName()
         ) {
+            val standalone = qualifiedName?.asString() ?: return
             logger.warn(
-                "${qualifiedName?.asString()} declares an event name but is not the companion object " +
-                    "of its event, so the catalog cannot pair it with a serializer. Register it by " +
-                    "hand: EventRegistry.register(key, serializer).",
+                "$standalone declares an event name but is not the companion object of its event, " +
+                    "so the catalog cannot pair it with a serializer. Register it by hand: " +
+                    "EventRegistry.register(key, serializer).",
                 this
             )
             return
@@ -109,18 +110,20 @@ class EventCatalogProcessor(
      * rather than to the derived default of `Event.Key`. The value of the override is a runtime
      * matter, the fact of it is what separates a migrated event from one left alone.
      */
-    private fun KSClassDeclaration.declaresName(): Boolean =
-        getAllProperties().firstOrNull { it.simpleName.asString() == "name" }
-            ?.parentDeclaration?.qualifiedName?.asString()
-            ?.let { it != KEY } ?: false
+    private fun KSClassDeclaration.declaresName(): Boolean {
+        val name = getAllProperties().firstOrNull { it.simpleName.asString() == "name" } ?: return false
+        val declaredIn = name.parentDeclaration?.qualifiedName ?: return false
+        return declaredIn.asString() != KEY
+    }
 
     /**
      * One catalog per compilation, written at the end of the first round: the catalog itself
      * declares no events, so later rounds have nothing to add to it.
      */
+    @Suppress("SpreadOperator") // Dependencies only takes a vararg, and this runs once per compilation
     private fun generate() {
-        if (generated || events.isEmpty()) return
-        generated = true
+        if (isGenerated || events.isEmpty()) return
+        isGenerated = true
         val name = "EventCatalog" + suffix()
         val dependencies = Dependencies(aggregating = true, *files.toTypedArray())
         codeGenerator.createNewFile(dependencies, PACKAGE, name).bufferedWriter().use { catalog ->
