@@ -55,10 +55,10 @@ Foundation module providing core event-driven abstractions. All other modules de
   `Outbox`, the `EventSourcingStorage`, the `RabbitPublisher` and the `RabbitQueue`; it travels as one
   object because a registry and a format given out separately can drift apart. A name is all a reader
   has and there is no way from one to a class: `register(key)` takes the serializer off the class the
-  key is the companion of. An event that declares no name is not held at all. Two events answering
-  one route — declared names, derived ones or any mix — are refused at registration, whichever way
-  the registry is built: constructor, `register`, the catalogs, the subscribers. Consumers register
-  themselves, see `RabbitQueue`
+  key is the companion of. Two events declaring one name are refused — the payload stored under it
+  could not be told from the other. An event that declares no name is not held at all: it keeps the
+  derived route and the class name in its payload, so a collision between two derived routes is the
+  pre-existing behaviour and is not diagnosed. Consumers register themselves, see `RabbitQueue`
 - `EventSerializer`: `{"type": .., "body": {..}}` of a stored event, a class over an `EventRegistry`
   (`EventRegistry.serializer`). The `type` is the declared name, resolved through the registry; an
   event without one is written under its class name and read back by loading it, which is also the
@@ -140,11 +140,10 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 **Retry mechanism:** 3-queue architecture per subscriber (Main Queue → DLX → Retry Queue → Main Queue → Parking Lot after max retries)
 
 ### event-ksp (Compile Time Event Catalog)
-KSP processor generating the `EventCatalog` of a module: the key of every concrete `Event` whose key
-is its companion object, plus the `META-INF/services` entry `EventRegistry.discovered()` loads it by.
-Events without a declared name are carried too — the registry never holds them, but claiming their
-derived routes is what lets it refuse a collision against them; they get no warnings otherwise, the
-migration is per event.
+KSP processor generating the `EventCatalog` of a module: the key of every event that declares a name
+(the fact of the `name` override — its value is a runtime matter), plus the `META-INF/services` entry
+`EventRegistry.discovered()` loads it by. An event that declares no name is not touched at all: no
+catalog entry and no warnings, the migration is per event.
 The catalog class name is derived from the hash of the event set, so catalogs of different modules
 never collide on one classpath. Applied to the test sources of `event` as its own end-to-end test
 (`kspTest(project(":event-ksp"))`), see `EventCatalogTest`.
@@ -203,7 +202,7 @@ forever, permanently.
 - The name is on `Event.Key`, the identity routing and subscribing already go through.
 - Reading a name back needs an `EventRegistry`, built once at startup and handed to the `Outbox`, the
   `EventSourcingStorage`, the `RabbitQueue` and the `RabbitPublisher`. The table is maintained by the
-  compiler: the `event-ksp` processor writes an `EventCatalog` of every concrete event per module, and
+  compiler: the `event-ksp` processor writes an `EventCatalog` of every event that declares a name, and
   `EventRegistry.discovered()` folds the catalogs on the classpath into the registry — declaring the
   name on the key is the whole of what an event author does, there is no registration to forget:
   ```kotlin

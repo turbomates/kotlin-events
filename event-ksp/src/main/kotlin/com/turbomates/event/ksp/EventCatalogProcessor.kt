@@ -25,20 +25,20 @@ class EventCatalogProcessorProvider : SymbolProcessorProvider {
 
 /**
  * Writes the event catalog of a module at compile time: an `EventCatalog` listing the key of every
- * concrete `Event` in the compilation, plus the `META-INF/services` entry that lets
+ * event that declares a name, plus the `META-INF/services` entry that lets
  * `EventRegistry.discovered()` find it. The table from a stored name back to a serializer has to be
  * maintained by someone — this makes it the compiler, so declaring the name on the key is the whole
  * of what an event author does, and there is no registration to forget.
  *
- * Events without a declared name are carried too, on purpose: the registry never holds them — they
- * are stored under their class name and need no table — but their derived routes exist in the broker
- * all the same, and `discovered()` refuses two events answering one route, declared or derived
- * alike. Without the unmigrated keys that check would be blind to them.
+ * An event that declares no name is not touched at all: it is stored under its class name, routed by
+ * its package and needs no table — the migration to declared names is per event, and the processor
+ * neither catalogs nor nags about events that have not started it. Whether a name is declared is the
+ * fact of the override itself, its value is read at runtime.
  *
  * Only events whose key is their companion object are cataloged — that is the documented shape, and
  * it is what ties the key to the class the serializer comes from. A named key declared as a
  * standalone object, or a named event that is not visible outside its file, is reported and left to
- * be registered by hand; an unnamed event in either shape needs nothing and is skipped in silence.
+ * be registered by hand.
  */
 class EventCatalogProcessor(
     private val codeGenerator: CodeGenerator,
@@ -77,18 +77,15 @@ class EventCatalogProcessor(
         val companion = declarations.filterIsInstance<KSClassDeclaration>()
             .firstOrNull { it.isCompanionObject }
             ?.takeIf { key.isAssignableFrom(it.asStarProjectedType()) }
-            ?: return
+        // No declared name — not migrated: stored under its class name, needs no table, nothing to
+        // catalog and nothing to warn about.
+        if (companion == null || !companion.declaresName()) return
         if (getVisibility() !in setOf(Visibility.PUBLIC, Visibility.INTERNAL)) {
-            // A named event the catalog cannot reference is one its author expects to be found;
-            // an unnamed one expects nothing and is left alone.
-            if (companion.declaresName()) {
-                logger.warn(
-                    "$name declares an event name but is not visible outside its file, so the " +
-                        "generated event catalog cannot reference it. Make it internal, or register " +
-                        "it by hand.",
-                    this
-                )
-            }
+            logger.warn(
+                "$name declares an event name but is not visible outside its file, so the generated " +
+                    "event catalog cannot reference it. Make it internal, or register it by hand.",
+                this
+            )
             return
         }
         val keyProperty = getDeclaredProperties().firstOrNull { it.simpleName.asString() == "key" }

@@ -45,9 +45,6 @@ import kotlinx.serialization.serializer
 class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_JSON) {
     private val serializers = ConcurrentHashMap<String, KSerializer<Event>>()
 
-    /** Route → the key claiming it, declared and derived names alike, see [claim]. */
-    private val routes = ConcurrentHashMap<String, Event.Key<*>>()
-
     /**
      * Serializer of the stored payload, `{"type": .., "body": {..}}`, resolving the `type` through
      * this registry — what [encode] and [decode] write and read with.
@@ -70,7 +67,6 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
     @OptIn(InternalSerializationApi::class)
     @Suppress("UNCHECKED_CAST")
     fun register(key: Event.Key<*>): Boolean {
-        claim(key)
         if (!key.hasDeclaredName()) return false
         val eventClass = key::class.java.declaringClass
         require(eventClass != null && Event::class.java.isAssignableFrom(eventClass)) {
@@ -87,33 +83,8 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
      * @return false when [key] declares no name, see [register].
      */
     @Suppress("UNCHECKED_CAST")
-    fun <T : Event> register(key: Event.Key<T>, serializer: KSerializer<T>): Boolean {
-        claim(key)
-        return put(key, serializer as KSerializer<Event>)
-    }
-
-    /**
-     * Claims the route of [key]: its declared name, or the derived one of an event that declares
-     * nothing. Two events answering one route are refused no matter how the registry is built —
-     * the constructor, [register] by hand, the catalogs of [discovered], the self registration of
-     * the rabbit consumers — because every one of those passes through here. A queue bound to a
-     * shared route receives every claimant, and the consumer cannot tell one from another.
-     */
-    private fun claim(key: Event.Key<*>) {
-        // The name of an anonymous key that declares nothing throws; such a key cannot be routed or
-        // stored at all, and whatever uses it fails on its own account.
-        val route = runCatching { key.name }.getOrNull() ?: return
-        val previous = routes.putIfAbsent(route, key) ?: return
-        require(previous == key) {
-            "Events ${previous.owner()} and ${key.owner()} are both routed as '$route': a queue " +
-                "bound to that route receives both and cannot tell one from another. Give them " +
-                "distinct declared names."
-        }
-    }
-
-    /** The event of a key, for an error message: the class the key is the companion of. */
-    private fun Event.Key<*>.owner(): String =
-        this::class.java.declaringClass?.name ?: this::class.qualifiedName ?: toString()
+    fun <T : Event> register(key: Event.Key<T>, serializer: KSerializer<T>): Boolean =
+        put(key, serializer as KSerializer<Event>)
 
     private fun put(key: Event.Key<*>, serializer: KSerializer<Event>): Boolean {
         if (!key.hasDeclaredName()) return false
@@ -178,12 +149,7 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
         fun discovered(json: Json = DEFAULT_JSON): EventRegistry =
             of(ServiceLoader.load(EventCatalog::class.java).toList(), json)
 
-        /**
-         * [discovered] over the given catalogs. The catalogs carry keys without declared names too:
-         * the registry never holds those — their events are stored under their class names — but
-         * their routes exist in the broker all the same, and registering them is what lets [claim]
-         * refuse a collision between a declared name and a derived one.
-         */
+        /** [discovered] over the given catalogs, the same event met in several of them is fine. */
         internal fun of(catalogs: List<EventCatalog>, json: Json = DEFAULT_JSON): EventRegistry {
             val registry = EventRegistry(json = json)
             catalogs.flatMap { it.keys }.distinct().forEach { key -> registry.register(key) }

@@ -6,7 +6,7 @@ import com.turbomates.event.EventRegistry
 import java.util.ServiceLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -35,35 +35,13 @@ class EventCatalogTest {
     }
 
     @Test
-    fun `an event without a declared name is cataloged but never registered`() {
-        // The catalog carries it so discovered() can rule out a route collision with it; the
-        // registry never holds it — it is stored under its class name and needs no table.
+    fun `an event without a declared name stays out of the catalog`() {
+        // Not migrated: stored under its class name, needs no table — the processor leaves it alone
+        // and the registry never sees it.
         val cataloged = ServiceLoader.load(EventCatalog::class.java).flatMap { it.keys }
         assertTrue(cataloged.contains(CatalogedEvent))
-        assertTrue(cataloged.contains(CatalogedDerivedEvent))
+        assertFalse(cataloged.contains(CatalogedDerivedEvent))
         assertNull(EventRegistry.discovered()["event.catalog.cataloged_derived_event"])
-    }
-
-    @Test
-    fun `a declared name that answers the derived route of another event is refused`() {
-        // DeclaredClash names itself with the very route DerivedRouted is already published under:
-        // a queue bound to it would receive both. Neither event is in the real catalogs (both are
-        // file private), the collision is what a compiled catalog of them would carry.
-        val failure = assertFailsWith<IllegalArgumentException> {
-            EventRegistry.of(listOf(catalog(DerivedRouted, DeclaredClash)))
-        }
-        assertTrue(failure.message!!.contains("event.catalog.derived_routed"))
-    }
-
-    @Test
-    fun `two events sharing a derived route are refused`() {
-        // Neither event declares a name, both keys derive the same route: the collision the broker
-        // has always been silently living with is refused at startup now.
-        assertEquals(FirstClashKey.name, SecondClashKey.name)
-        val failure = assertFailsWith<IllegalArgumentException> {
-            EventRegistry.of(listOf(catalog(FirstClashKey, SecondClashKey)))
-        }
-        assertTrue(failure.message!!.contains(FirstClashKey.name))
     }
 
     @Test
@@ -93,37 +71,3 @@ internal data class CatalogedDerivedEvent(val value: String) : Event() {
     companion object : Key<CatalogedDerivedEvent>
 }
 
-// The clash fixtures are file private on purpose: the processor skips them, so the real catalogs of
-// this module stay collision free and only the hand-built ones of the tests above carry the clash.
-
-@Serializable
-private data class DerivedRouted(val value: String = "") : Event() {
-    override val key get() = Companion
-
-    companion object : Key<DerivedRouted>
-}
-
-@Serializable
-private data class DeclaredClash(val value: String = "") : Event() {
-    override val key get() = Companion
-
-    companion object : Key<DeclaredClash> {
-        override val name = "event.catalog.derived_routed"
-    }
-}
-
-// Two standalone keys of one package derive one route: the name is built from the package alone.
-
-@Serializable
-private data class FirstClashEvent(val value: String = "") : Event() {
-    override val key get() = FirstClashKey
-}
-
-@Serializable
-private data class SecondClashEvent(val value: String = "") : Event() {
-    override val key get() = SecondClashKey
-}
-
-private object FirstClashKey : Event.Key<FirstClashEvent>
-
-private object SecondClashKey : Event.Key<SecondClashEvent>

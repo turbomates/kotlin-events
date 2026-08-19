@@ -334,10 +334,10 @@ val storage = EventSourcingStorage(database, events)
 val publisher = RabbitPublisher(config, events)
 ```
 
-An event that declares no name stays out of the registry — stored under its class name, routed by
-its package, migration is per event — but its derived route is claimed all the same: two events
-answering one route, declared or derived alike, fail the registry at startup, because a queue bound
-to that route would receive both. Two things a catalog cannot carry — an event from a jar compiled
+An event that declares no name is left alone entirely — stored under its class name, routed by its
+package, no catalog entry — so migration stays per event. Two events declaring one name fail the
+registry at startup: the payload stored under it could not be told from the other. Two things a
+catalog cannot carry — an event from a jar compiled
 without the processor, and a named key that is not the companion object of its event — are
 registered by hand on the returned registry: `events.register(key, serializer)`. The processor
 reports the standalone key at compile time, along with a `key` overridden with a backing field
