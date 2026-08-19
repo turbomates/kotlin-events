@@ -1,5 +1,6 @@
 package com.turbomates.event.rabbit
 
+import com.turbomates.event.EventRegistry
 import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.ConnectionFactory
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -39,7 +40,7 @@ class RabbitPublisherTest {
     fun `publishes concurrently from a single publisher`() = runBlocking {
         val config = Config(factory, "publisher-test", "publisher-test")
         val received = consume(config.exchange, "publisher-test-queue", MESSAGES)
-        val publisher = RabbitPublisher(config, Json)
+        val publisher = RabbitPublisher(config, EventRegistry())
 
         (1..MESSAGES)
             .map { number -> async(Dispatchers.IO) { publisher.publish(TestEvent("event-$number")) } }
@@ -56,7 +57,7 @@ class RabbitPublisherTest {
         // dead connection and open a new one.
         val config = Config(connectionFactory().apply { isAutomaticRecoveryEnabled = false }, "kill-test", "kill-test")
         val received = consume(config.exchange, "kill-test-queue", 2)
-        val publisher = RabbitPublisher(config, Json)
+        val publisher = RabbitPublisher(config, EventRegistry())
 
         publisher.publish(TestEvent("before"))
         withContext(Dispatchers.IO) { container.execInContainer("rabbitmqctl", "close_all_connections", "killed") }
@@ -72,7 +73,7 @@ class RabbitPublisherTest {
 
     @Test
     fun `fails when the publisher is closed`() = runBlocking {
-        val publisher = RabbitPublisher(Config(factory, "closed-test", "closed-test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "closed-test", "closed-test"), EventRegistry())
         publisher.publish(TestEvent("open"))
         publisher.close()
 

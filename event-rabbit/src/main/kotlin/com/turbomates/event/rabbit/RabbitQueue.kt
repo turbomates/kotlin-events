@@ -20,25 +20,24 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
 class RabbitQueue(
     private val config: Config,
-    private val json: Json,
+    /**
+     * The events of the application and how they are read: the name a delivery carries resolved back
+     * to an event, and the `Json` its payload is decoded with. Every subscriber started here
+     * registers its own key, so a consumer only application passes a fresh registry; an application
+     * that also publishes or reads an outbox passes the one the rest of it was built with.
+     */
+    private val events: EventRegistry,
     private val subscribersRegistry: SubscribersRegistry,
     private val scope: CoroutineScope,
     private val telemetryService: Telemetry,
     private val queueType: QueueType? = null,
     private val metrics: ConsumerMetrics = NoOpConsumerMetrics,
     private val errorHandler: (Throwable) -> Unit = {},
-    private val boundRoutes: BoundRoutes? = null,
-    /**
-     * Resolves the name a delivery carries back to an event. Every subscriber started here registers
-     * its own key, so a consumer only application needs no registry of its own; pass the one the rest
-     * of the application was built with when it also publishes or reads an outbox.
-     */
-    private val events: EventRegistry = EventRegistry()
+    private val boundRoutes: BoundRoutes? = null
 ) {
     private val logger by lazy { LoggerFactory.getLogger(javaClass) }
     private val channels = CopyOnWriteArrayList<Channel>()
@@ -46,7 +45,6 @@ class RabbitQueue(
     // A child of the caller's scope shared by every consumer's workers: cancelling
     // the caller's scope stops them, and close() cancels just this scope.
     private val workerScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
-
 
     fun run(queuesConfig: List<QueueConfig> = emptyList()) {
         val (eventsSubscribers, eventSubscribers) = subscribersRegistry.subscribers()
@@ -171,8 +169,7 @@ class RabbitQueue(
                 ChannelInfo(queueConfig.queueName, config.exchange, channel),
                 queueConfig,
                 subscribers,
-                json,
-                events.serializer,
+                events,
                 telemetryService,
                 workerScope,
                 metrics,

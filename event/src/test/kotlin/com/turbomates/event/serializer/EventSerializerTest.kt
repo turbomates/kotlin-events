@@ -99,6 +99,20 @@ class EventSerializerTest {
     }
 
     @Test
+    fun `a declared name is written even by a registry that does not hold it`() {
+        // Publishing needs only the name: the reader is another application with a registry of its
+        // own. What must be able to read its rows back — the outbox — refuses the write instead.
+        val payload = json.encodeToString(EventRegistry().serializer, NamedEvent("test"))
+        assertEquals(true, payload.contains("\"test.serializer.named\""))
+    }
+
+    @Test
+    fun `an event with no declared name is written without being registered`() {
+        val event = TestEvent(1, "test")
+        assertEquals(event, json.decodeFromString(serializer, json.encodeToString(EventRegistry().serializer, event)))
+    }
+
+    @Test
     fun `a row written before the name was declared is still read by its class`() {
         val event = NamedEvent("test")
         val stored = buildJsonObject {

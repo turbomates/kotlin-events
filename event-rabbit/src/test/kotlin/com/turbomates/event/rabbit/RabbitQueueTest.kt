@@ -2,6 +2,7 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.ConnectionFactory
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.NoOpTelemetry
@@ -66,10 +67,10 @@ class RabbitQueueTest {
             var count = 0;
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -107,10 +108,10 @@ class RabbitQueueTest {
             var count = 0
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -153,10 +154,10 @@ class RabbitQueueTest {
             var count = 0
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -238,7 +239,7 @@ class RabbitQueueTest {
         val queue = first.queueName(config.queuePrefix)
         RabbitQueue(
             config,
-            Json,
+            EventRegistry(),
             SubscribersRegistry().also { it.registry(first); it.registry(second) },
             scope = this,
             telemetryService = NoOpTelemetry(),
@@ -286,11 +287,13 @@ class RabbitQueueTest {
         val config = Config(factory, "test", "test")
         var received: Event? = null
         val subscriber = subscriber(listOf(NamedTestEvent.subscriber { received = it }))
-        // Two registries that never met: the consumer registers the keys of its own subscribers, and
-        // the publisher needs none — it takes the name off the event it is given.
+        // The publisher carries an empty registry on purpose: publishing needs only the name, which
+        // is on the key of the event — the readers are the subscribers of the consuming application,
+        // and those register themselves. Requiring registration here would fail the outbox sweep of
+        // an application that publishes an event nobody local subscribes to.
         val rabbitQueue = queueOf(config, subscriber, this)
         rabbitQueue.run()
-        RabbitPublisher(config, Json).use { it.publish(NamedTestEvent("test")) }
+        RabbitPublisher(config, EventRegistry()).use { it.publish(NamedTestEvent("test")) }
         withTimeout(60.seconds) {
             while (isActive && received == null) {
                 delay(100)
@@ -308,7 +311,7 @@ class RabbitQueueTest {
         boundRoutes: BoundRoutes? = null
     ): RabbitQueue = RabbitQueue(
         config,
-        Json,
+        EventRegistry(),
         SubscribersRegistry().also { it.registry(subscriber) },
         scope = scope,
         telemetryService = NoOpTelemetry(),

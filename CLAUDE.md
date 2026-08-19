@@ -37,7 +37,7 @@ kotlin-events is a Kotlin library for event-driven architecture with support for
 
 ## Module Architecture
 
-The project is organized into four modules with clear separation of concerns:
+The project is organized into five modules with clear separation of concerns:
 
 ### event (Core Module)
 Foundation module providing core event-driven abstractions. All other modules depend on this.
@@ -50,14 +50,23 @@ Foundation module providing core event-driven abstractions. All other modules de
   `snake_case`, so a rename or a move of the class orphans nothing. Defaults to `derivedName()`, the
   name built from the package of the key the way routes always were, which keeps an application that
   declares nothing exactly where it was — deprecated, and never written to a stored payload
-- `EventRegistry`: `name → KSerializer<Event>` of the declared names, built at startup and shared by
-  everything that reads events. A name is all a reader has and there is no way from one to a class:
-  `register(key)` takes the serializer off the class the key is the companion of. An event that
-  declares no name is not held at all. Consumers register themselves, see `RabbitQueue`
+- `EventRegistry`: the events of an application and how they are written — `name → KSerializer<Event>`
+  of the declared names plus the `Json` of every payload. Built once at startup and handed to the
+  `Outbox`, the `EventSourcingStorage`, the `RabbitPublisher` and the `RabbitQueue`; it travels as one
+  object because a registry and a format given out separately can drift apart. A name is all a reader
+  has and there is no way from one to a class: `register(key)` takes the serializer off the class the
+  key is the companion of. An event that declares no name is not held at all. Two events answering
+  one route — declared names, derived ones or any mix — are refused at registration, whichever way
+  the registry is built: constructor, `register`, the catalogs, the subscribers. Consumers register
+  themselves, see `RabbitQueue`
 - `EventSerializer`: `{"type": .., "body": {..}}` of a stored event, a class over an `EventRegistry`
   (`EventRegistry.serializer`). The `type` is the declared name, resolved through the registry; an
   event without one is written under its class name and read back by loading it, which is also the
-  only way to read a row written before its event declared a name
+  only way to read a row written before its event declared a name. The serializer itself never
+  refuses a write: publishing to the broker needs only the name — the readers are the subscribers of
+  other applications, each with a registry of its own — so requiring the publisher's registry to
+  hold the event would fail the sweep of an application publishing an event nobody local consumes.
+  The storage, whose reader is the application itself, checks instead, see `Outbox`
 - `Publisher` (interface): Core interface for event publication using suspend functions
 - `LocalPublisher`: In-process synchronous event publisher
 - `SubscribersRegistry`: Type-safe registry mapping `Event.Key<T>` to subscribers
@@ -72,7 +81,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 **Key components:**
 - `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, retry policy, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`, `failed`). All of it is called inside a transaction opened by the caller
 - `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. It fails the transaction that raised an event whose declared name is not in the `EventRegistry` of the outbox, rather than committing a row nothing can decode — that row would hold back its whole stream until it is deleted by hand
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. An event whose declared name the registry of the outbox does not hold is refused by `batchEventsInsert` before a row is written — the sweep reads its own rows back, so the transaction that raised the event fails at its author rather than committing a row nothing can decode
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
@@ -82,10 +91,9 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
   bucket, partition key and attempts made. Observation only, the publisher logs and defers the row on
   its own; a handler that throws is logged and ignored. Failures that are not about one event stay
   with the log and `OutboxMetrics`
-- `EventSourcingStorage`: Event sourcing support for aggregate reconstruction
-- `EventSerialization`: `Json`, the `EventRegistry` and the `KSerializer<Event>` of the jsonb columns,
-  carried by the `Outbox`. Pass the registry the rest of the application was built with, the same
-  instance the consumers and the event sourcing storage hold
+- `EventSourcingStorage`: Event sourcing support for aggregate reconstruction. Takes the same
+  `EventRegistry` instance the `Outbox` holds — it is the one that wrote the rows, a registry of its
+  own would silently miss the history written under every name it does not hold
 - `EventsTable`: Database table for outbox events (jsonb event, bucket, partition_key, database-assigned sequence, attempts, next_attempt_at, trace_information, published_at)
 - `EventSourcingTable`: Complete event history by rootId for event sourcing
 
@@ -131,6 +139,16 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 
 **Retry mechanism:** 3-queue architecture per subscriber (Main Queue → DLX → Retry Queue → Main Queue → Parking Lot after max retries)
 
+### event-ksp (Compile Time Event Catalog)
+KSP processor generating the `EventCatalog` of a module: the key of every concrete `Event` whose key
+is its companion object, plus the `META-INF/services` entry `EventRegistry.discovered()` loads it by.
+Events without a declared name are carried too — the registry never holds them, but claiming their
+derived routes is what lets it refuse a collision against them; they get no warnings otherwise, the
+migration is per event.
+The catalog class name is derived from the hash of the event set, so catalogs of different modules
+never collide on one classpath. Applied to the test sources of `event` as its own end-to-end test
+(`kspTest(project(":event-ksp"))`), see `EventCatalogTest`.
+
 ### event-telemetry-opentelemetry (Distributed Tracing)
 OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 
@@ -168,7 +186,7 @@ handed to both `install()` and `OutboxPublisher`, there is no process wide state
 ```kotlin
 @Serializable
 class MyEvent(val data: String) : Event() {
-    override val key: Key<out Event> = Companion
+    override val key get() = Companion
     companion object : Key<MyEvent> {
         override val name = "billing.subscription.created"
     }
@@ -184,12 +202,20 @@ forever, permanently.
 
 - The name is on `Event.Key`, the identity routing and subscribing already go through.
 - Reading a name back needs an `EventRegistry`, built once at startup and handed to the `Outbox`, the
-  `EventSourcingStorage`, the `RabbitQueue` and the `RabbitPublisher`. What the application consumes
-  registers itself out of the subscribers; what it publishes is registered by hand:
+  `EventSourcingStorage`, the `RabbitQueue` and the `RabbitPublisher`. The table is maintained by the
+  compiler: the `event-ksp` processor writes an `EventCatalog` of every concrete event per module, and
+  `EventRegistry.discovered()` folds the catalogs on the classpath into the registry — declaring the
+  name on the key is the whole of what an event author does, there is no registration to forget:
   ```kotlin
-  val events = EventRegistry(MyEvent, AnotherEvent)
-  Outbox(bucketCount = 16, serialization = EventSerialization(events = events))
+  val events = EventRegistry.discovered()
+  Outbox(bucketCount = 16, events = events)
   ```
+  The processor is applied per module (`alias(deps.plugins.ksp)` + `ksp("com.turbomates:event-ksp:..")`).
+  It also reports at compile time a `key` overridden with a backing field (it would enter the payload
+  and fail the write, override with a getter), an event that is not visible outside its file, and one
+  whose key is not its companion — the last two cannot enter a catalog and are registered by hand
+  (`register(key, serializer)`), which also covers events from jars compiled without the processor.
+  What the application consumes additionally registers itself out of the subscribers of `RabbitQueue`.
 - An event that declares no name keeps everything it had: the derived route, the class name in the
   payload, no registry entry. The migration is per event, and nothing about an application that has
   not started it changes.
@@ -222,12 +248,12 @@ registry.registry(MySubscriber())
 
 ### Publisher Chain
 ```kotlin
-val events = EventRegistry(MyEvent, AnotherEvent)
+val events = EventRegistry.discovered()  // the catalogs generated by event-ksp
 val publishers = listOf(
     LocalPublisher(registry),                  // In-process subscribers
-    RabbitPublisher(config, json, events = events)  // Distributed messaging
+    RabbitPublisher(config, events)             // Distributed messaging
 )
-val outbox = Outbox(bucketCount = 16, serialization = EventSerialization(events = events))
+val outbox = Outbox(bucketCount = 16, events = events)
 val outboxPublisher = OutboxPublisher(database, publishers, outbox.also { it.install() })
 ```
 

@@ -18,7 +18,7 @@ class OutboxInterceptorTest {
     private lateinit var database: Database
     private val outbox = Outbox(
         TEST_BUCKET_COUNT,
-        serialization = EventSerialization(events = EventRegistry(NamedEvent))
+        events = EventRegistry(NamedEvent)
     )
     private lateinit var interceptor: OutboxInterceptor
 
@@ -47,7 +47,7 @@ class OutboxInterceptorTest {
             events.addEvent(TestEvent())
         }
         transaction(database) {
-            assertEquals(1, outbox.events.selectAll().count())
+            assertEquals(1, outbox.eventsTable.selectAll().count())
         }
     }
 
@@ -58,7 +58,7 @@ class OutboxInterceptorTest {
             events.addEvent(NamedEvent())
         }
         transaction(database) {
-            assertEquals(1, outbox.events.selectAll().count())
+            assertEquals(1, outbox.eventsTable.selectAll().count())
         }
     }
 
@@ -72,7 +72,7 @@ class OutboxInterceptorTest {
         }
         assertEquals(true, failure.message?.contains("interceptor.test.unregistered"))
         transaction(database) {
-            assertEquals(0, outbox.events.selectAll().count())
+            assertEquals(0, outbox.eventsTable.selectAll().count())
         }
     }
 

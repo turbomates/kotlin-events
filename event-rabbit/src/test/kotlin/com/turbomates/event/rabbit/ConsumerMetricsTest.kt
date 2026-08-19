@@ -2,6 +2,7 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.ConnectionFactory
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.NoOpTelemetry
@@ -51,14 +52,14 @@ class ConsumerMetricsTest {
         registry.registry(subscriber)
         val queue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry(),
             metrics = metrics
         )
         queue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 3, retryDelay = 1.seconds)))
-val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
 try {
     publisher.publish(TestEvent("test"))
 } finally {
@@ -95,14 +96,14 @@ try {
         }
         val queue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry(),
             metrics = broken
         )
         queue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 3, retryDelay = 1.seconds)))
-        RabbitPublisher(Config(factory, "test", "test"), Json).publish(TestEvent("test"))
+        RabbitPublisher(Config(factory, "test", "test"), EventRegistry()).publish(TestEvent("test"))
 
         withTimeout(TIMEOUT) {
             while (handled.get() == 0) {
@@ -125,14 +126,14 @@ try {
         registry.registry(subscriber)
         val queue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry(),
             metrics = metrics
         )
         queue.run(listOf(QueueConfig(subscriber.queueName("test"), maxRetries = 2, retryDelay = 1.seconds)))
-        RabbitPublisher(Config(factory, "test", "test"), Json).publish(TestEvent("test"))
+        RabbitPublisher(Config(factory, "test", "test"), EventRegistry()).publish(TestEvent("test"))
 
         withTimeout(TIMEOUT) {
             while (metrics.parked.isEmpty()) {

@@ -7,6 +7,7 @@ include("deferredcommand")
 include("deferredcommand-exposed")
 include("deferredcommand-rabbit")
 include(":event-telemetry-opentelemetry")
+include(":event-ksp")
 
 pluginManagement {
     plugins {
@@ -28,6 +29,7 @@ dependencyResolutionManagement {
             version("testcontainers", "1.21.4")
             version("nexus_staging", "2.0.0")
             version("opentelemetry", "1.64.0")
+            version("ksp", "2.3.11")
 
             library("exposed_time", "org.jetbrains.exposed", "exposed-java-time").versionRef("exposed")
             library("exposed_core", "org.jetbrains.exposed", "exposed-core").versionRef("exposed")
@@ -53,6 +55,7 @@ dependencyResolutionManagement {
             library("testcontainers_postgres", "org.testcontainers", "postgresql").versionRef("testcontainers")
             library("testcontainers_rabbit", "org.testcontainers", "rabbitmq").versionRef("testcontainers")
 
+            library("ksp_api", "com.google.devtools.ksp", "symbol-processing-api").versionRef("ksp")
             library("opentelemetry_api", "io.opentelemetry", "opentelemetry-api").versionRef("opentelemetry")
             library("opentelemetry_context", "io.opentelemetry", "opentelemetry-context").versionRef("opentelemetry")
 
@@ -60,6 +63,7 @@ dependencyResolutionManagement {
             plugin("detekt", "io.gitlab.arturbosch.detekt").versionRef("detekt")
             plugin("kotlin_serialization", "org.jetbrains.kotlin.plugin.serialization").versionRef("kotlin")
             plugin("nexus.release", "io.github.gradle-nexus.publish-plugin").versionRef("nexus_staging")
+            plugin("ksp", "com.google.devtools.ksp").versionRef("ksp")
 
             bundle(
                 "exposed",
