@@ -160,7 +160,7 @@ class Outbox(
         return OutboxBatch(
             rows.map { row ->
                 val decoded =
-                    runCatching { events.json.decodeFromString(events.serializer, row[rawEvent]) }
+                    runCatching { events.decode(row[rawEvent]) }
                 OutboxBatch.Item(
                     id = row[eventsTable.id].value,
                     partitionKey = row[eventsTable.partitionKey],
@@ -279,7 +279,7 @@ class Outbox(
 }
 
 internal class EventsTable(events: EventRegistry) : UUIDTable("outbox_events") {
-    val event = jsonb("event", events.json, events.serializer)
+    val event = jsonb<Event>("event", events::encode, events::decode)
     val bucket = integer("bucket")
 
     /** The stream of the row: the partition key of the event, its own id when it has none. */
@@ -304,6 +304,6 @@ private class NextAttemptAt(private val delay: kotlin.time.Duration) : Expressio
 
 internal class EventSourcingTable(events: EventRegistry) : UUIDTable("event_sourcing") {
     val rootId = text("root_id")
-    val event = jsonb("data", events.json, events.serializer)
+    val event = jsonb<Event>("data", events::encode, events::decode)
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

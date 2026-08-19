@@ -123,7 +123,7 @@ internal class ListenerDeliveryCallback(
             val startedAt = TimeSource.Monotonic.markNow()
             try {
                 logger.info("Event $eventJsonString accepted ")
-                val event = events.json.decodeFromString(events.serializer, eventJsonString)
+                val event = events.decode(eventJsonString)
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
                 if (callback == null) {
                     // The queue is bound to a key this consumer has no subscriber for: the delivery

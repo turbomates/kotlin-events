@@ -10,6 +10,17 @@ version = "1.0-SNAPSHOT"
 repositories {
     mavenCentral()
 }
+// The processor is loaded by the JVM that runs the build, not the one the application targets:
+// a consumer building on an older JDK than this library's toolchain must still be able to load it.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
 detekt {
     toolVersion = deps.versions.detekt.get()
     autoCorrect = false

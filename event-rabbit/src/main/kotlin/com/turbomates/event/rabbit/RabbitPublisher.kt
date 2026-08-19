@@ -83,7 +83,7 @@ class RabbitPublisher(
             )
         }
         val properties = propsBuilder.build()
-        val body = events.json.encodeToString(events.serializer, event).toByteArray()
+        val body = events.encode(event).toByteArray()
         val routingKey = event.key.routeName()
         publishMutex.withLock {
             // Everything below blocks: the publish itself and the wait for the confirm.

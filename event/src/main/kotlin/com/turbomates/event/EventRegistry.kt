@@ -42,7 +42,7 @@ import kotlinx.serialization.serializer
  * EventRegistry(SubscriptionCreated, json = Json(from = EventRegistry.DEFAULT_JSON) { serializersModule = domain })
  * ```
  */
-class EventRegistry(vararg keys: Event.Key<*>, val json: Json = DEFAULT_JSON) {
+class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_JSON) {
     private val serializers = ConcurrentHashMap<String, KSerializer<Event>>()
 
     /** Route → the key claiming it, declared and derived names alike, see [claim]. */
@@ -50,9 +50,9 @@ class EventRegistry(vararg keys: Event.Key<*>, val json: Json = DEFAULT_JSON) {
 
     /**
      * Serializer of the stored payload, `{"type": .., "body": {..}}`, resolving the `type` through
-     * this registry. One instance per registry, hand it to whatever writes or reads events.
+     * this registry — what [encode] and [decode] write and read with.
      */
-    val serializer: KSerializer<Event> by lazy { EventSerializer(this) }
+    internal val serializer: KSerializer<Event> by lazy { EventSerializer(this) }
 
     init {
         keys.forEach { register(it) }
@@ -103,9 +103,9 @@ class EventRegistry(vararg keys: Event.Key<*>, val json: Json = DEFAULT_JSON) {
         // The name of an anonymous key that declares nothing throws; such a key cannot be routed or
         // stored at all, and whatever uses it fails on its own account.
         val route = runCatching { key.name }.getOrNull() ?: return
-        val previous = routes.putIfAbsent(route, key)
-        require(previous == null || previous == key) {
-            "Events ${previous?.owner()} and ${key.owner()} are both routed as '$route': a queue " +
+        val previous = routes.putIfAbsent(route, key) ?: return
+        require(previous == key) {
+            "Events ${previous.owner()} and ${key.owner()} are both routed as '$route': a queue " +
                 "bound to that route receives both and cannot tell one from another. Give them " +
                 "distinct declared names."
         }
@@ -133,6 +133,12 @@ class EventRegistry(vararg keys: Event.Key<*>, val json: Json = DEFAULT_JSON) {
         }
         return true
     }
+
+    /** The stored form of [event]: `{"type": .., "body": {..}}` in the json of this registry. */
+    fun encode(event: Event): String = json.encodeToString(serializer, event)
+
+    /** The event a stored payload holds, its `type` resolved through this registry. */
+    fun decode(payload: String): Event = json.decodeFromString(serializer, payload)
 
     /** Serializer of the event stored under [name], null when no event was registered under it. */
     internal operator fun get(name: String): KSerializer<Event>? = serializers[name]

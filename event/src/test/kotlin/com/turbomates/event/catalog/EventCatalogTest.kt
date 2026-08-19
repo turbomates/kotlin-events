@@ -30,7 +30,7 @@ class EventCatalogTest {
     @Test
     fun `a discovered event round trips through the discovered registry`() {
         val events = EventRegistry.discovered()
-        val payload = events.json.encodeToString(events.serializer, CatalogedEvent("test"))
+        val payload = events.encode(CatalogedEvent("test"))
         assertEquals(true, payload.contains("\"catalog.test.declared\""))
     }
 
