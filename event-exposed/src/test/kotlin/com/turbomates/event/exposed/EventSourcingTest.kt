@@ -1,6 +1,7 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.TraceInformation
 import java.util.UUID
 import kotlin.test.Test
@@ -29,8 +30,10 @@ class EventSourcingTest {
 
     @Test
     fun `events written through the outbox are read back from storage`() {
-        val outbox = Outbox(TEST_BUCKET_COUNT)
-        val eventSourcingStorage = EventSourcingStorage(database)
+        // The storage reads what the outbox wrote, so they share the one registry, see EventRegistry.
+        val registry = EventRegistry(TestEventSourcingEvent)
+        val outbox = Outbox(TEST_BUCKET_COUNT, registry)
+        val eventSourcingStorage = EventSourcingStorage(database, registry)
         val testEvent = TestEventSourcingEvent(UUID.randomUUID().toString())
         transaction(database) {
             listOf("event_sourcing_postgres_table.sql", "outbox_events_postgres_table.sql").forEach { resource ->

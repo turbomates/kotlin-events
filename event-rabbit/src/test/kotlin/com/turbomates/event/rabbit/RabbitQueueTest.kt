@@ -2,6 +2,7 @@ package com.turbomates.event.rabbit
 
 import com.rabbitmq.client.ConnectionFactory
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.EventsSubscriber
 import com.turbomates.event.NoOpTelemetry
@@ -66,10 +67,10 @@ class RabbitQueueTest {
             var count = 0;
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -107,10 +108,10 @@ class RabbitQueueTest {
             var count = 0
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -153,10 +154,10 @@ class RabbitQueueTest {
             var count = 0
         }
         registry.registry(subscriber)
-        val publisher = RabbitPublisher(Config(factory, "test", "test"), Json)
+        val publisher = RabbitPublisher(Config(factory, "test", "test"), EventRegistry())
         val rabbitQueue = RabbitQueue(
             Config(factory, "test", "test"),
-            Json,
+            EventRegistry(),
             registry,
             scope = this,
             telemetryService = NoOpTelemetry()
@@ -238,7 +239,7 @@ class RabbitQueueTest {
         val queue = first.queueName(config.queuePrefix)
         RabbitQueue(
             config,
-            Json,
+            EventRegistry(),
             SubscribersRegistry().also { it.registry(first); it.registry(second) },
             scope = this,
             telemetryService = NoOpTelemetry(),
@@ -251,6 +252,79 @@ class RabbitQueueTest {
         )
     }
 
+    @Test
+    fun `a declared name is bound together with the route it replaced`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val management = ManagementApi.of(factory, container.httpPort)
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { }))
+        val queue = subscriber.queueName(config.queuePrefix)
+        queueOf(config, subscriber, this).run { run(); close() }
+
+        assertEquals(
+            setOfNotNull(NamedTestEvent.routeName(), NamedTestEvent.legacyRouteName()),
+            management.of(queue, config.exchange)
+        )
+        assertEquals("rabbit.test.named", NamedTestEvent.routeName())
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun `the route a declared name replaced is unbound once the legacy binding is turned off`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val management = ManagementApi.of(factory, container.httpPort)
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { }))
+        val queue = subscriber.queueName(config.queuePrefix)
+        queueOf(config, subscriber, this).run { run(); close() }
+
+        val migrated = config.copy(bindLegacyRoutes = false)
+        queueOf(migrated, subscriber, this, boundRoutes = management).run { run(); close() }
+
+        assertEquals(setOf(NamedTestEvent.routeName()), management.of(queue, config.exchange))
+    }
+
+    @Test
+    fun `an event of a declared name reaches the subscriber that registered itself`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        var received: Event? = null
+        val subscriber = subscriber(listOf(NamedTestEvent.subscriber { received = it }))
+        // The publisher carries an empty registry on purpose: publishing needs only the name, which
+        // is on the key of the event — the readers are the subscribers of the consuming application,
+        // and those register themselves. Requiring registration here would fail the outbox sweep of
+        // an application that publishes an event nobody local subscribes to.
+        val rabbitQueue = queueOf(config, subscriber, this)
+        rabbitQueue.run()
+        RabbitPublisher(config, EventRegistry()).use { it.publish(NamedTestEvent("test")) }
+        withTimeout(60.seconds) {
+            while (isActive && received == null) {
+                delay(100)
+            }
+        }
+        rabbitQueue.close()
+
+        assertEquals(NamedTestEvent("test"), received)
+    }
+
+    @Test
+    fun `a subscribed key the application registered by hand is left alone`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val events = EventRegistry()
+        // The key is not the companion object of its event, so the registry cannot take a serializer
+        // off it and the application hands it one. Registering it again here is what the consumer
+        // does for every key it starts, and it has nothing left to ask of this one.
+        events.register(StandaloneKey, NamedTestEvent.serializer())
+        val rabbitQueue = RabbitQueue(
+            config,
+            events,
+            SubscribersRegistry().also { it.registry(subscriber(listOf(StandaloneKey.subscriber { }))) },
+            scope = this,
+            telemetryService = NoOpTelemetry()
+        )
+        rabbitQueue.run()
+        rabbitQueue.close()
+
+        assertTrue("rabbit.test.standalone" in events)
+    }
+
     private fun queueOf(
         config: Config,
         subscriber: EventsSubscriber,
@@ -258,7 +332,7 @@ class RabbitQueueTest {
         boundRoutes: BoundRoutes? = null
     ): RabbitQueue = RabbitQueue(
         config,
-        Json,
+        EventRegistry(),
         SubscribersRegistry().also { it.registry(subscriber) },
         scope = scope,
         telemetryService = NoOpTelemetry(),
@@ -286,5 +360,20 @@ data class AnotherTestEvent(val name: String) : Event() {
         get() = AnotherTestEvent
 
     companion object : Key<AnotherTestEvent>
+}
+
+/** A key of [NamedTestEvent] that is not its companion object, so it carries no serializer with it. */
+object StandaloneKey : Event.Key<NamedTestEvent> {
+    override val name = "rabbit.test.standalone"
+}
+
+@Serializable
+data class NamedTestEvent(val value: String) : Event() {
+    override val key: Key<out Event>
+        get() = NamedTestEvent
+
+    companion object : Key<NamedTestEvent> {
+        override val name = "rabbit.test.named"
+    }
 }
 

@@ -1,18 +1,16 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.NoOpTelemetry
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.seriazlier.EventSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.UUID
 import kotlin.random.Random
 import kotlin.time.Duration
 import kotlin.time.toKotlinDuration
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.Expression
 import org.jetbrains.exposed.v1.core.QueryBuilder
 import org.jetbrains.exposed.v1.core.SortOrder
@@ -42,7 +40,7 @@ import org.jetbrains.exposed.v1.json.jsonb
  * [OutboxPublisher], they have to agree on all of it.
  *
  * ```
- * val outbox = Outbox(bucketCount = 16)
+ * val outbox = Outbox(bucketCount = 16, events = EventRegistry.discovered())
  * outbox.install()
  * val publisher = OutboxPublisher(database, publishers, outbox)
  * ```
@@ -55,14 +53,18 @@ import org.jetbrains.exposed.v1.json.jsonb
  * `batchLimit * bucketCount` events. It only bounds what one worker takes from a bucket at a time,
  * the publishing transaction stays one event wide.
  * @param bucketLock how a bucket is held while it is published, by default a Postgres advisory lock.
- * @param serialization format of the `jsonb` columns holding the events.
+ * @param events the events of the application and how they are written, see [EventRegistry]. Pass
+ * the registry the rest of the application was built with — the same instance the rabbit publisher,
+ * the consumer and the event sourcing storage hold, or the rows of one are unreadable by the other.
+ * Required without a default for the same reason [bucketCount] is: it describes the rows already
+ * written, and a defaulted empty registry would be a wiring mistake nothing points at.
  * @param retryPolicy backoff of an event the publishers keep failing, see [OutboxRetryPolicy].
  */
 class Outbox(
     private val bucketCount: Int,
+    private val events: EventRegistry,
     private val batchLimit: Int = DEFAULT_BATCH_LIMIT,
     private val bucketLock: OutboxBucketLock = PostgresAdvisoryBucketLock(),
-    private val serialization: EventSerialization = EventSerialization(),
     private val retryPolicy: OutboxRetryPolicy = OutboxRetryPolicy(),
     private val telemetryService: Telemetry = NoOpTelemetry(),
 ) {
@@ -76,8 +78,8 @@ class Outbox(
     /** Where the next sweep starts, so workers polling in lockstep do not fight over one bucket. */
     private var sweepStart = Random.nextInt(bucketCount)
 
-    internal val events = EventsTable(serialization)
-    internal val eventSourcing = EventSourcingTable(serialization)
+    internal val eventsTable = EventsTable(events)
+    internal val sourcingTable = EventSourcingTable(events)
 
     /** Bucket of an outbox row: the event partition key when it has one, its own id otherwise. */
     fun bucket(partitionKey: UUID?, eventId: UUID): Int = bucket(partitionKey ?: eventId)
@@ -130,46 +132,46 @@ class Outbox(
      * Call it inside the transaction that holds the bucket.
      */
     fun load(bucket: Int): OutboxBatch {
-        val blocked = events
-            .select(events.partitionKey)
+        val blocked = eventsTable
+            .select(eventsTable.partitionKey)
             .withDistinct()
             .where {
-                (events.bucket eq bucket) and events.publishedAt.isNull() and
-                        (events.nextAttemptAt greater CurrentDateTime)
+                (eventsTable.bucket eq bucket) and eventsTable.publishedAt.isNull() and
+                        (eventsTable.nextAttemptAt greater CurrentDateTime)
             }
-            .map { it[events.partitionKey] }
-        val rawEvent = events.event.castTo<String>(TextColumnType())
-        val rows = events
+            .map { it[eventsTable.partitionKey] }
+        val rawEvent = eventsTable.event.castTo<String>(TextColumnType())
+        val rows = eventsTable
             .select(
-                events.id,
+                eventsTable.id,
                 rawEvent,
-                events.partitionKey,
-                events.attempts,
-                events.traceInformation,
-                events.createdAt
+                eventsTable.partitionKey,
+                eventsTable.attempts,
+                eventsTable.traceInformation,
+                eventsTable.createdAt
             )
             .where {
-                val head = (events.bucket eq bucket) and events.publishedAt.isNull()
-                if (blocked.isEmpty()) head else head and (events.partitionKey notInList blocked)
+                val head = (eventsTable.bucket eq bucket) and eventsTable.publishedAt.isNull()
+                if (blocked.isEmpty()) head else head and (eventsTable.partitionKey notInList blocked)
             }
-            .orderBy(events.sequence to SortOrder.ASC)
+            .orderBy(eventsTable.sequence to SortOrder.ASC)
             .limit(batchLimit)
             .toList()
         return OutboxBatch(
             rows.map { row ->
                 val decoded =
-                    runCatching { serialization.json.decodeFromString(serialization.serializer, row[rawEvent]) }
+                    runCatching { events.decode(row[rawEvent]) }
                 OutboxBatch.Item(
-                    id = row[events.id].value,
-                    partitionKey = row[events.partitionKey],
-                    attempts = row[events.attempts],
+                    id = row[eventsTable.id].value,
+                    partitionKey = row[eventsTable.partitionKey],
+                    attempts = row[eventsTable.attempts],
                     event = decoded.getOrNull(),
                     payload = row[rawEvent],
-                    traceInformation = row[events.traceInformation],
+                    traceInformation = row[eventsTable.traceInformation],
                     error = decoded.exceptionOrNull()
                 )
             },
-            rows.firstOrNull()?.get(events.createdAt)
+            rows.firstOrNull()?.get(eventsTable.createdAt)
         )
     }
 
@@ -185,9 +187,9 @@ class Outbox(
      */
     fun failed(id: UUID, attempts: Int): Boolean {
         val made = attempts + 1
-        return events.update({ events.id eq id }) {
-            it[events.attempts] = made
-            it[events.nextAttemptAt] = NextAttemptAt(retryPolicy.delay(made))
+        return eventsTable.update({ eventsTable.id eq id }) {
+            it[eventsTable.attempts] = made
+            it[eventsTable.nextAttemptAt] = NextAttemptAt(retryPolicy.delay(made))
         } > 0
     }
 
@@ -197,7 +199,7 @@ class Outbox(
      *
      * @return false when the row is already gone, published by someone else.
      */
-    fun delete(id: UUID): Boolean = events.deleteWhere { events.id eq id } > 0
+    fun delete(id: UUID): Boolean = eventsTable.deleteWhere { eventsTable.id eq id } > 0
 
     /**
      * Unpublished rows of the whole outbox, the backlog the workers are draining. Published rows
@@ -205,27 +207,36 @@ class Outbox(
      * deep backlog of hundreds of thousands of rows counts in low tens of milliseconds, once per
      * sweep. Call it inside a transaction.
      */
-    fun depth(): Long = events.selectAll().where { events.publishedAt.isNull() }.count()
+    fun depth(): Long = eventsTable.selectAll().where { eventsTable.publishedAt.isNull() }.count()
 
     /**
      * Writes [raised] to the outbox, and the ones that are event sourced to the event sourcing table.
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
+     *
+     * Whatever is raised is written. An event whose name the registry does not hold makes a row the
+     * sweep cannot decode, and that is left to the sweep: it defers the row and reports it through
+     * [OutboxMetrics.eventFailed] and the error handler of the [OutboxPublisher], while the
+     * transaction that raised it commits. The business data does not depend on the delivery of its
+     * events, which is the whole of why the outbox exists — a registry missing an entry is a wiring
+     * mistake of the application, and the compiler reports it: the `event-ksp` processor catalogs
+     * every event of a module and fails the build on the ones it cannot, so the only way to reach
+     * this is a module compiled without the processor.
      */
     fun batchEventsInsert(raised: List<PublicEvent>) {
-        events.batchInsert(raised) { event ->
-            this[events.id] = event.id
-            this[events.event] = event.original
-            this[events.bucket] = bucket(event.original.partitionKey, event.id)
-            this[events.partitionKey] = event.original.partitionKey ?: event.id
-            this[events.createdAt] = event.createdAt
-            this[events.traceInformation] = event.traceInformation
+        eventsTable.batchInsert(raised) { event ->
+            this[eventsTable.id] = event.id
+            this[eventsTable.event] = event.original
+            this[eventsTable.bucket] = bucket(event.original.partitionKey, event.id)
+            this[eventsTable.partitionKey] = event.original.partitionKey ?: event.id
+            this[eventsTable.createdAt] = event.createdAt
+            this[eventsTable.traceInformation] = event.traceInformation
         }
-        eventSourcing.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
-            this[eventSourcing.id] = uuidV7()
-            this[eventSourcing.rootId] = event.rootId
-            this[eventSourcing.event] = event
-            this[eventSourcing.createdAt] = event.timestamp
+        sourcingTable.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
+            this[sourcingTable.id] = uuidV7()
+            this[sourcingTable.rootId] = event.rootId
+            this[sourcingTable.event] = event
+            this[sourcingTable.createdAt] = event.timestamp
         }
     }
 
@@ -262,30 +273,8 @@ class Outbox(
     }
 }
 
-/**
- * Format of the `jsonb` columns holding events. Build the [json] on top of [DEFAULT_JSON] to add a
- * serializers module of your own, for example contextual serializers of the value types the events
- * carry, and keep the flags the existing rows were written with:
- *
- * ```
- * EventSerialization(Json(from = EventSerialization.DEFAULT_JSON) { serializersModule = domain })
- * ```
- *
- * [serializer] decides what a row looks like, [EventSerializer] writes `{"type": .., "body": {..}}`.
- * A table that already holds rows can only be read back by a serializer that understands them, so
- * replacing it is a migration, not a setting.
- */
-data class EventSerialization(
-    val json: Json = DEFAULT_JSON,
-    val serializer: KSerializer<Event> = EventSerializer
-) {
-    companion object {
-        val DEFAULT_JSON: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }
-    }
-}
-
-internal class EventsTable(serialization: EventSerialization) : UUIDTable("outbox_events") {
-    val event = jsonb("event", serialization.json, serialization.serializer)
+internal class EventsTable(events: EventRegistry) : UUIDTable("outbox_events") {
+    val event = jsonb<Event>("event", events::encode, events::decode)
     val bucket = integer("bucket")
 
     /** The stream of the row: the partition key of the event, its own id when it has none. */
@@ -296,7 +285,7 @@ internal class EventsTable(serialization: EventSerialization) : UUIDTable("outbo
     val attempts = integer("attempts").default(0)
     val nextAttemptAt = datetime("next_attempt_at").nullable()
     val traceInformation =
-        jsonb("trace_information", EventSerialization.DEFAULT_JSON, TraceInformation.serializer()).nullable()
+        jsonb("trace_information", EventRegistry.DEFAULT_JSON, TraceInformation.serializer()).nullable()
     val publishedAt = datetime("published_at").nullable()
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }
@@ -308,8 +297,8 @@ private class NextAttemptAt(private val delay: kotlin.time.Duration) : Expressio
     }
 }
 
-internal class EventSourcingTable(serialization: EventSerialization) : UUIDTable("event_sourcing") {
+internal class EventSourcingTable(events: EventRegistry) : UUIDTable("event_sourcing") {
     val rootId = text("root_id")
-    val event = jsonb("data", serialization.json, serialization.serializer)
+    val event = jsonb<Event>("data", events::encode, events::decode)
     val createdAt = datetime("created_at").clientDefault { LocalDateTime.now(ZoneOffset.UTC) }
 }

@@ -2,6 +2,7 @@ package com.turbomates.event
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlinx.serialization.Serializable
 
 class EventStoreTest {
     @Test
@@ -22,7 +23,8 @@ class EventStoreTest {
         assertEquals(emptyList(), store.raiseEvents().toList())
     }
 
-    private class TestEvent : Event() {
+    @Serializable
+    internal class TestEvent : Event() {
         override val key: Key<out Event> = Companion
 
         companion object : Key<TestEvent>

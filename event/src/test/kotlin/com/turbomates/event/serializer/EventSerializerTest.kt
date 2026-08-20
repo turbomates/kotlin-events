@@ -1,14 +1,16 @@
 package com.turbomates.event.serializer
 
 import com.turbomates.event.Event
-import com.turbomates.event.seriazlier.EventSerializer
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.seriazlier.LocalDateTimeSerializer
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.PrimitiveKind
 import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
@@ -20,66 +22,128 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 class EventSerializerTest {
+    private val json = Json
+    private val serializer = EventRegistry(NamedEvent, TestEvent, PartitionedEvent).serializer
+
     @Test
     fun serialize() {
         val event = TestEvent(1, "test")
-        val json = Json
         assertEquals(buildJsonObject {
-            put("type", TestEvent::class.qualifiedName)
+            put("type", "event.serializer.test_event")
             putJsonObject("body") {
                 put("int", 1)
                 put("string", "test")
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
             }
-        }, json.encodeToJsonElement(EventSerializer, event))
+        }, json.encodeToJsonElement(serializer, event))
     }
 
     @Test
     fun deserialize() {
         val event = TestEvent(1, "test")
-        val json = Json
-        val string = json.encodeToString(EventSerializer, event)
-        assertEquals(event, json.decodeFromString(EventSerializer, string))
+        val string = json.encodeToString(serializer, event)
+        assertEquals(event, json.decodeFromString(serializer, string))
     }
 
     @Test
     fun `partition key stays out of the payload`() {
         val userId = UUID.randomUUID()
         val event = PartitionedEvent(userId)
-        val json = Json
         assertEquals(buildJsonObject {
-            put("type", PartitionedEvent::class.qualifiedName)
+            put("type", "event.serializer.partitioned_event")
             putJsonObject("body") {
                 put("userId", userId.toString())
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
             }
-        }, json.encodeToJsonElement(EventSerializer, event))
+        }, json.encodeToJsonElement(serializer, event))
         assertEquals(userId, event.partitionKey)
     }
 
     @Test
     fun `partition key survives deserialization`() {
         val userId = UUID.randomUUID()
-        val json = Json
-        val string = json.encodeToString(EventSerializer, PartitionedEvent(userId))
-        assertEquals(userId, json.decodeFromString(EventSerializer, string).partitionKey)
+        val string = json.encodeToString(serializer, PartitionedEvent(userId))
+        assertEquals(userId, json.decodeFromString(serializer, string).partitionKey)
     }
 
     @Test
     fun `event without a partition key`() {
         assertNull(TestEvent(1, "test").partitionKey)
     }
+
+    @Test
+    fun `a declared name is written instead of the class`() {
+        val event = NamedEvent("test")
+        assertEquals(buildJsonObject {
+            put("type", "test.serializer.named")
+            putJsonObject("body") {
+                put("string", "test")
+                put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
+            }
+        }, json.encodeToJsonElement(serializer, event))
+    }
+
+    @Test
+    fun `a declared name is read back through the registry`() {
+        val event = NamedEvent("test")
+        assertEquals(event, json.decodeFromString(serializer, json.encodeToString(serializer, event)))
+    }
+
+    @Test
+    fun `a declared name nothing registered cannot be read`() {
+        val payload = json.encodeToString(serializer, NamedEvent("test"))
+        val failure = assertFailsWith<SerializationException> {
+            json.decodeFromString(EventRegistry().serializer, payload)
+        }
+        assertEquals(true, failure.message?.contains("test.serializer.named"))
+    }
+
+    @Test
+    fun `a name is written even by a registry that does not hold it`() {
+        // Publishing needs only the name: the reader is another application with a registry of its
+        // own. Requiring the entry here would fail the publisher of an event nobody local consumes.
+        val payload = json.encodeToString(EventRegistry().serializer, NamedEvent("test"))
+        assertEquals(true, payload.contains("\"test.serializer.named\""))
+    }
+
+    @Test
+    fun `a derived name is written and read back the same way a declared one is`() {
+        val event = TestEvent(1, "test")
+        assertEquals(event, json.decodeFromString(serializer, json.encodeToString(serializer, event)))
+    }
+
+    @Test
+    fun `a row written before the name reached the payload is still read by its class`() {
+        val event = NamedEvent("test")
+        val stored = buildJsonObject {
+            put("type", NamedEvent::class.qualifiedName)
+            putJsonObject("body") {
+                put("string", "test")
+                put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
+            }
+        }
+        assertEquals(event, json.decodeFromJsonElement(serializer, stored))
+    }
 }
 
 @Serializable
-private data class TestEvent(val int: Int, val string: String) : Event() {
+internal data class TestEvent(val int: Int, val string: String) : Event() {
     override val key: Key<out Event> = Companion
 
     companion object : Key<TestEvent>
 }
 
 @Serializable
-private data class PartitionedEvent(
+internal data class NamedEvent(val string: String) : Event() {
+    override val key: Key<out Event> = Companion
+
+    companion object : Key<NamedEvent> {
+        override val name = "test.serializer.named"
+    }
+}
+
+@Serializable
+internal data class PartitionedEvent(
     @Serializable(with = TestUUIDSerializer::class) val userId: UUID
 ) : Event() {
     override val key get() = Companion

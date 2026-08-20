@@ -5,9 +5,9 @@ import com.rabbitmq.client.BuiltinExchangeType
 import com.rabbitmq.client.Channel
 import com.rabbitmq.client.Connection
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.Publisher
 import com.turbomates.event.TraceInformation
-import com.turbomates.event.seriazlier.EventSerializer
 import java.io.IOException
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -16,7 +16,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 
 /**
@@ -49,7 +48,12 @@ import org.slf4j.LoggerFactory
  */
 class RabbitPublisher(
     private val config: Config,
-    private val json: Json,
+    /**
+     * The events of the application and how they are published: the name an event goes out under and
+     * the `Json` its payload is written with. Pass the registry the rest of the application was built
+     * with, the same instance its outbox and its consumers hold.
+     */
+    private val events: EventRegistry,
     private val confirmTimeout: Duration = 30.seconds,
     private val buildProperties: AMQP.BasicProperties.Builder.() -> Unit = {},
     private val errorHandler: (Event, Throwable) -> Unit = { _, _ -> }
@@ -79,7 +83,7 @@ class RabbitPublisher(
             )
         }
         val properties = propsBuilder.build()
-        val body = json.encodeToString(EventSerializer, event).toByteArray()
+        val body = events.encode(event).toByteArray()
         val routingKey = event.key.routeName()
         publishMutex.withLock {
             // Everything below blocks: the publish itself and the wait for the confirm.

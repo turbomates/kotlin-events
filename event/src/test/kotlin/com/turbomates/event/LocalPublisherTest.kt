@@ -3,6 +3,7 @@ package com.turbomates.event
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.Serializable
 
 class LocalPublisherTest {
     @Test
@@ -25,7 +26,8 @@ class LocalPublisherTest {
     }
 
 
-    private class TestEvent : Event() {
+    @Serializable
+    internal class TestEvent : Event() {
         override val key: Key<out Event> = Companion
 
         companion object : Key<TestEvent>

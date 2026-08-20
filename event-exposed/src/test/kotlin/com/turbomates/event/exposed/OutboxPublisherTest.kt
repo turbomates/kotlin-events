@@ -1,6 +1,7 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
+import com.turbomates.event.EventRegistry
 import com.turbomates.event.Publisher
 import com.turbomates.event.TraceInformation
 import com.turbomates.event.exposed.serializer.UUIDSerializer
@@ -34,7 +35,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 
 class OutboxPublisherTest {
-    private val outbox = Outbox(TEST_BUCKET_COUNT)
+    private val outbox = Outbox(TEST_BUCKET_COUNT, EventRegistry(OutboxEvent, PartitionedOutboxEvent))
     private lateinit var interceptor: OutboxInterceptor
 
     @BeforeEach
@@ -137,6 +138,7 @@ class OutboxPublisherTest {
         // a backoff longer than the test, so the head of the stream is never tried a second time
         val retrying = Outbox(
             TEST_BUCKET_COUNT,
+            EventRegistry(OutboxEvent, PartitionedOutboxEvent),
             retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours, maxDelay = 1.hours)
         )
 
@@ -160,8 +162,8 @@ class OutboxPublisherTest {
         assertEquals(3L, metrics.snapshot().depth, "the blocked stream stays in the backlog gauge")
         assertEquals(1, metrics.snapshot().eventFailures[head.id])
         val (attemptsMade, nextAttemptAt) = transaction(database) {
-            val row = outbox.events.selectAll().first { it[outbox.events.id].value == head.id }
-            row[outbox.events.attempts] to row[outbox.events.nextAttemptAt]
+            val row = outbox.eventsTable.selectAll().first { it[outbox.eventsTable.id].value == head.id }
+            row[outbox.eventsTable.attempts] to row[outbox.eventsTable.nextAttemptAt]
         }
         assertEquals(1, attemptsMade)
         assertNotNull(nextAttemptAt, "the failed row carries its backoff")
@@ -223,6 +225,7 @@ class OutboxPublisherTest {
         val publisher = FlakyPublisher(head, failures = 2)
         val retrying = Outbox(
             TEST_BUCKET_COUNT,
+            EventRegistry(OutboxEvent, PartitionedOutboxEvent),
             retryPolicy = OutboxRetryPolicy(initialDelay = 100.milliseconds, multiplier = 1.0)
         )
 
@@ -336,7 +339,7 @@ class OutboxPublisherTest {
         }
 
         val rows = transaction(database) {
-            outbox.events.selectAll().map { Triple(it[outbox.events.event], it[outbox.events.id].value, it[outbox.events.bucket]) }
+            outbox.eventsTable.selectAll().map { Triple(it[outbox.eventsTable.event], it[outbox.eventsTable.id].value, it[outbox.eventsTable.bucket]) }
         }
 
         assertEquals(3, rows.size)
@@ -349,18 +352,18 @@ class OutboxPublisherTest {
 
     private fun insert(event: PublicEvent) {
         transaction(database) {
-            outbox.events.insert {
-                it[outbox.events.id] = event.id
-                it[outbox.events.event] = event.original
-                it[outbox.events.bucket] = outbox.bucket(event.original.partitionKey, event.id)
-                it[outbox.events.partitionKey] = event.original.partitionKey ?: event.id
-                it[outbox.events.createdAt] = event.createdAt
-                it[outbox.events.traceInformation] = TraceInformation(null, null, null)
+            outbox.eventsTable.insert {
+                it[outbox.eventsTable.id] = event.id
+                it[outbox.eventsTable.event] = event.original
+                it[outbox.eventsTable.bucket] = outbox.bucket(event.original.partitionKey, event.id)
+                it[outbox.eventsTable.partitionKey] = event.original.partitionKey ?: event.id
+                it[outbox.eventsTable.createdAt] = event.createdAt
+                it[outbox.eventsTable.traceInformation] = TraceInformation(null, null, null)
             }
         }
     }
 
-    private fun unpublished(): Long = transaction(database) { outbox.events.selectAll().count() }
+    private fun unpublished(): Long = transaction(database) { outbox.eventsTable.selectAll().count() }
 
     /** Keeps the advisory lock of a bucket for as long as the returned connection stays open. */
     private fun holdBucket(bucket: Int): Connection {

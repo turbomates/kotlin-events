@@ -1,5 +1,6 @@
 package com.turbomates.event.exposed
 
+import com.turbomates.event.EventRegistry
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -10,7 +11,7 @@ import kotlin.test.assertTrue
 internal const val TEST_BUCKET_COUNT = 16
 
 class OutboxTest {
-    private val outbox = Outbox(TEST_BUCKET_COUNT)
+    private val outbox = Outbox(TEST_BUCKET_COUNT, EventRegistry())
 
     @Test
     fun `partition key defines the bucket`() {
@@ -50,7 +51,7 @@ class OutboxTest {
 
     @Test
     fun `another bucket count is another layout`() {
-        val wider = Outbox(TEST_BUCKET_COUNT * 2)
+        val wider = Outbox(TEST_BUCKET_COUNT * 2, EventRegistry())
         val keys = (1..100).map { UUID.randomUUID() }
 
         assertTrue(
@@ -61,15 +62,15 @@ class OutboxTest {
 
     @Test
     fun `rejects a count out of range`() {
-        assertFailsWith<IllegalArgumentException> { Outbox(0) }
-        assertFailsWith<IllegalArgumentException> { Outbox(Outbox.MAX_BUCKET_COUNT + 1) }
+        assertFailsWith<IllegalArgumentException> { Outbox(0, EventRegistry()) }
+        assertFailsWith<IllegalArgumentException> { Outbox(Outbox.MAX_BUCKET_COUNT + 1, EventRegistry()) }
     }
 
     @Test
     fun `refuses a second interceptor`() {
         val installed = outbox.install()
         try {
-            assertFailsWith<IllegalStateException> { Outbox(TEST_BUCKET_COUNT).install() }
+            assertFailsWith<IllegalStateException> { Outbox(TEST_BUCKET_COUNT, EventRegistry()).install() }
         } finally {
             org.jetbrains.exposed.v1.jdbc.JdbcTransaction.globalInterceptors.remove(installed)
         }
