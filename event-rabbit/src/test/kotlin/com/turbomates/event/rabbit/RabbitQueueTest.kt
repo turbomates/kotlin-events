@@ -304,6 +304,27 @@ class RabbitQueueTest {
         assertEquals(NamedTestEvent("test"), received)
     }
 
+    @Test
+    fun `a subscribed key the application registered by hand is left alone`() = runBlocking {
+        val config = Config(factory, "test", "test")
+        val events = EventRegistry()
+        // The key is not the companion object of its event, so the registry cannot take a serializer
+        // off it and the application hands it one. Registering it again here is what the consumer
+        // does for every key it starts, and it has nothing left to ask of this one.
+        events.register(StandaloneKey, NamedTestEvent.serializer())
+        val rabbitQueue = RabbitQueue(
+            config,
+            events,
+            SubscribersRegistry().also { it.registry(subscriber(listOf(StandaloneKey.subscriber { }))) },
+            scope = this,
+            telemetryService = NoOpTelemetry()
+        )
+        rabbitQueue.run()
+        rabbitQueue.close()
+
+        assertTrue("rabbit.test.standalone" in events)
+    }
+
     private fun queueOf(
         config: Config,
         subscriber: EventsSubscriber,
@@ -339,6 +360,11 @@ data class AnotherTestEvent(val name: String) : Event() {
         get() = AnotherTestEvent
 
     companion object : Key<AnotherTestEvent>
+}
+
+/** A key of [NamedTestEvent] that is not its companion object, so it carries no serializer with it. */
+object StandaloneKey : Event.Key<NamedTestEvent> {
+    override val name = "rabbit.test.standalone"
 }
 
 @Serializable

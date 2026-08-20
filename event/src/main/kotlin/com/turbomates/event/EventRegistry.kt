@@ -123,6 +123,9 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
     /** Serializer of the event stored under [name], null when no event was registered under it. */
     internal operator fun get(name: String): KSerializer<Event>? = serializers[name]
 
+    /** Whether an event is registered under [name], however it got there. */
+    operator fun contains(name: String): Boolean = serializers.containsKey(name)
+
     companion object {
         val DEFAULT_JSON: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }
 

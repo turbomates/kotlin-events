@@ -120,8 +120,10 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 - `RabbitQueue`: Consumer manager with Dead Letter Exchange (DLX) support. Routing keys are
   `Event.Key.name`. Every subscriber it starts registers its key in the `EventRegistry` it holds —
   what an application consumes is exactly the keys of its subscribers, so the consuming side needs no
-  registration by hand, only what the application publishes does. Events with no declared name are
-  logged once at start. A consumer that ends without being asked to — cancelled by the broker
+  registration by hand, only what the application publishes does. A name the registry already holds is
+  left alone — a key registered by hand is the one whose serializer cannot be taken off its class, and
+  asking again would fail the start of a consumer that is set up correctly. Events with no declared
+  name are logged once at start. A consumer that ends without being asked to — cancelled by the broker
   (deleted queue, lost node) or taken down with an error of its channel — is rebuilt from scratch —
   fresh channel, declarations and bindings — at one attempt per 5s until the broker accepts it, the
   successful attempt paced too so a queue that cancels its consumer over and over can not churn

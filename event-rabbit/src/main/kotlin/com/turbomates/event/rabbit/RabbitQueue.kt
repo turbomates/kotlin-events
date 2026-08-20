@@ -69,7 +69,11 @@ class RabbitQueue(
      */
     private fun register(subscribers: List<EventSubscriber<out Event>>) {
         val keys = subscribers.map { it.key }
-        keys.forEach { events.register(it) }
+        // A name the registry already holds is left alone. It is the same registration — the catalog
+        // of that event, or the application registering it by hand — and a key registered by hand is
+        // the one whose serializer cannot be taken off its class in the first place, so asking for it
+        // here would fail the start of a consumer that is set up correctly.
+        keys.filterNot { it.name in events }.forEach { events.register(it) }
         val derived = keys.filterNot { it.hasDeclaredName() }
         if (derived.isEmpty()) return
         logger.warn(

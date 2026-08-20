@@ -80,6 +80,13 @@ class EventRegistryTest {
         assertNotNull(registry["registry.test.standalone"])
     }
 
+    @Test
+    fun `a registered name is told apart from one nothing answers`() {
+        val registry = EventRegistry(Declared)
+        assertEquals(true, "registry.test.declared" in registry)
+        assertEquals(false, "registry.test.unregistered" in registry)
+    }
+
     /**
      * A key with no class of its own: the registry takes it like any other, and the processor never
      * sees it, which is what keeps the fixtures of the tests below out of the generated catalog.
