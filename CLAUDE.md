@@ -45,29 +45,37 @@ Foundation module providing core event-driven abstractions. All other modules de
 **Key abstractions:**
 - `Event` (abstract class): Base class for all events with `Event.Key<T>` for type-safe routing and an
   optional `partitionKey` (`@Transient`, override with a getter) that keeps a stream of events together
-- `Event.Key.name`: The stable identity of an event — its routing key and the `type` of its stored
-  payload. Declared by hand (`override val name = "billing.subscription.created"`), dot separated and
+- `Event.Key.name`: The identity of an event — its routing key and the `type` of its stored payload.
+  Declared by hand (`override val name = "billing.subscription.created"`), dot separated and
   `snake_case`, so a rename or a move of the class orphans nothing. Defaults to `derivedName()`, the
   name built from the package of the key the way routes always were, which keeps an application that
-  declares nothing exactly where it was — deprecated, and never written to a stored payload
+  declares nothing exactly where it was — deprecated, and as fragile as the class it follows, but not
+  a second mechanism: declared or derived, the name is what is routed, stored and registered
 - `EventRegistry`: the events of an application and how they are written — `name → KSerializer<Event>`
-  of the declared names plus the `Json` of every payload. Built once at startup and handed to the
-  `Outbox`, the `EventSourcingStorage`, the `RabbitPublisher` and the `RabbitQueue`; it travels as one
-  object because a registry and a format given out separately can drift apart. A name is all a reader
-  has and there is no way from one to a class: `register(key)` takes the serializer off the class the
-  key is the companion of. Two events declaring one name are refused — the payload stored under it
-  could not be told from the other. An event that declares no name is not held at all: it keeps the
-  derived route and the class name in its payload, so a collision between two derived routes is the
-  pre-existing behaviour and is not diagnosed. Consumers register themselves, see `RabbitQueue`
+  plus the `Json` of every payload. Built once at startup and handed to the `Outbox`, the
+  `EventSourcingStorage`, the `RabbitPublisher` and the `RabbitQueue`; it travels as one object because
+  a registry and a format given out separately can drift apart. A name is all a reader has and there is
+  no way from one to a class: `register(key)` takes the serializer off the class the key is the
+  companion of, which is why every event has to be `@Serializable` — the processor fails the build on
+  one that is not, instead of leaving it to the startup that registers it. Every event belongs here
+  whether its name is
+  declared or derived, because the payload carries the name either way; two events answering one name
+  are refused, which is also how a collision between two derived names is finally diagnosed. The form
+  (`snake_case`, two segments) is asked of a declared name only — a derived one has been the routing
+  key of that event all along, and refusing it would fail the startup of an application that changed
+  nothing. Consumers register themselves, see `RabbitQueue`
 - `EventSerializer`: `{"type": .., "body": {..}}` of a stored event, a class over an `EventRegistry`
-  (`EventRegistry.serializer`). The `type` is the declared name, resolved through the registry; an
-  event without one is written under its class name and read back by loading it, which is also the
-  only way to read a row written before its event declared a name. The serializer itself never
-  refuses a write, and neither does the outbox: the business data of a transaction does not depend
-  on the delivery of its events, so a name nothing registered costs a row the sweep cannot decode —
-  deferred and reported through `OutboxMetrics.eventFailed` and the error handler — rather than the
-  work that raised it. Registration is a fact about the build, and the `event-ksp` processor is what
-  reports it: it catalogs what it can and warns about the rest
+  (`EventRegistry.serializer`). The `type` is the name of the event, resolved back through the
+  registry, and the `body` is written with the same entry it is read with, so an event registered
+  with a serializer of its own is stored in the shape that serializer gives it; an event the registry
+  does not hold is written under the serializer of its own class. A `type` the registry does not
+  hold is read by loading it as a class — how every payload
+  of this library used to be written, and the only way to read a row stored before the name reached
+  the payload. The serializer itself never refuses a write, and neither does the outbox: the business
+  data of a transaction does not depend on the delivery of its events, so a name nothing registered
+  costs a row the sweep cannot decode — deferred and reported through `OutboxMetrics.eventFailed` and
+  the error handler — rather than the work that raised it. Registration is a fact about the build, and
+  the `event-ksp` processor is what reports it
 - `Publisher` (interface): Core interface for event publication using suspend functions
 - `LocalPublisher`: In-process synchronous event publisher
 - `SubscribersRegistry`: Type-safe registry mapping `Event.Key<T>` to subscribers
@@ -82,7 +90,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 **Key components:**
 - `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, retry policy, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`, `failed`). All of it is called inside a transaction opened by the caller
 - `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. Whatever is raised is written: an event whose declared name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. Whatever is raised is written: an event whose name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
@@ -141,10 +149,16 @@ Provides RabbitMQ distribution with retry/dead-letter queue handling.
 **Retry mechanism:** 3-queue architecture per subscriber (Main Queue → DLX → Retry Queue → Main Queue → Parking Lot after max retries)
 
 ### event-ksp (Compile Time Event Catalog)
-KSP processor generating the `EventCatalog` of a module: the key of every event that declares a name
-(the fact of the `name` override — its value is a runtime matter), plus the `META-INF/services` entry
-`EventRegistry.discovered()` loads it by. An event that declares no name is not touched at all: no
-catalog entry and no warnings, the migration is per event.
+KSP processor generating the `EventCatalog` of a module: the key of every event of it, plus the
+`META-INF/services` entry `EventRegistry.discovered()` loads it by. The catalog is exhaustive rather
+than a list of the events that opted in — a payload carries the name of its event whether that name
+is declared or derived, so an event missing from every catalog is an event whose rows nothing can
+read. That is why the two shapes a catalog cannot carry are build errors, not warnings: an event that
+is not visible outside its file, and one whose key is not its companion object. Both are fixed on the
+spot (make it `internal`, give it a companion key) or registered by hand with
+`EventRegistry.register(key, serializer)`, which is also what events from jars compiled without the
+processor need. A `key` overridden with a backing field stays a warning — it is about the payload,
+not the catalog.
 The catalog class name is derived from the hash of the event set, so catalogs of different modules
 never collide on one classpath. Applied to the test sources of `event` as its own end-to-end test
 (`kspTest(project(":event-ksp"))`), see `EventCatalogTest`.
@@ -200,25 +214,27 @@ the routing key of an event, orphaning the bindings of the queues consuming it, 
 `outbox_events` and `event_sourcing` row of it unreadable — for event sourcing, where the rows live
 forever, permanently.
 
-- The name is on `Event.Key`, the identity routing and subscribing already go through.
+- The name is on `Event.Key`, the identity routing and subscribing already go through. An event that
+  declares nothing falls back to the name derived from its class — as fragile as the class, but the
+  same mechanism: one name, routed, stored and registered. There is no second path through the code
+  for a non-migrated event, only a less stable name.
 - Reading a name back needs an `EventRegistry`, built once at startup and handed to the `Outbox`, the
   `EventSourcingStorage`, the `RabbitQueue` and the `RabbitPublisher`. The table is maintained by the
-  compiler: the `event-ksp` processor writes an `EventCatalog` of every event that declares a name, and
-  `EventRegistry.discovered()` folds the catalogs on the classpath into the registry — declaring the
-  name on the key is the whole of what an event author does, there is no registration to forget:
+  compiler: the `event-ksp` processor writes an `EventCatalog` of every event of the module, and
+  `EventRegistry.discovered()` folds the catalogs on the classpath into the registry — there is no
+  registration to forget:
   ```kotlin
   val events = EventRegistry.discovered()
   Outbox(bucketCount = 16, events = events)
   ```
-  The processor is applied per module (`alias(deps.plugins.ksp)` + `ksp("com.turbomates:event-ksp:..")`).
-  It also reports at compile time a `key` overridden with a backing field (it would enter the payload
-  and fail the write, override with a getter), an event that is not visible outside its file, and one
-  whose key is not its companion — the last two cannot enter a catalog and are registered by hand
-  (`register(key, serializer)`), which also covers events from jars compiled without the processor.
-  What the application consumes additionally registers itself out of the subscribers of `RabbitQueue`.
-- An event that declares no name keeps everything it had: the derived route, the class name in the
-  payload, no registry entry. The migration is per event, and nothing about an application that has
-  not started it changes.
+  The processor is applied per module (`alias(deps.plugins.ksp)` + `ksp("com.turbomates:event-ksp:..")`),
+  and applying it is not optional: an event in a module compiled without it reaches no catalog, and its
+  rows are undecodable — the one hole the compiler cannot report. It fails the build on an event that
+  is not visible outside its file and on one whose key is not its companion object, both of which are
+  registered by hand instead (`register(key, serializer)`), which also covers events from jars compiled
+  without the processor. A `key` overridden with a backing field stays a warning — it would enter the
+  payload and fail the write, override it with a getter. What the application consumes additionally
+  registers itself out of the subscribers of `RabbitQueue`.
 - Declaring a name changes the routing key of that event and the `type` of the rows written from then
   on. `Config.bindLegacyRoutes` keeps the old route bound for the length of a rolling deploy; the rows
   written before it keep being read by their class name, which means the class has to stay where it is
@@ -227,6 +243,12 @@ forever, permanently.
   UPDATE event_sourcing SET data = jsonb_set(data, '{type}', '"billing.subscription.created"')
   WHERE data->>'type' = 'com.turbomates.billing.subscription.SubscriptionCreated';
   ```
+- Upgrading to a version that writes the name into the payload changes the stored `type` of an event
+  that declares nothing too — from the qualified class name to the derived name, its routing key all
+  along. Nothing is lost: the rows already written keep being read by their class. What it costs is a
+  rolling deploy window in which a node of the older version cannot decode a row a new one wrote (an
+  outbox row is deferred and goes out once the deploy is over), and a second historical `type` to
+  migrate the day that event declares a name.
 
 ### Subscriber Registration
 ```kotlin

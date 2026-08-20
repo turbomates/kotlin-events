@@ -25,20 +25,22 @@ class EventCatalogProcessorProvider : SymbolProcessorProvider {
 
 /**
  * Writes the event catalog of a module at compile time: an `EventCatalog` listing the key of every
- * event that declares a name, plus the `META-INF/services` entry that lets
- * `EventRegistry.discovered()` find it. The table from a stored name back to a serializer has to be
- * maintained by someone — this makes it the compiler, so declaring the name on the key is the whole
- * of what an event author does, and there is no registration to forget.
+ * event of it, plus the `META-INF/services` entry that lets `EventRegistry.discovered()` find it.
+ * The table from a stored name back to a serializer has to be maintained by someone — this makes it
+ * the compiler, and there is no registration to forget.
  *
- * An event that declares no name is not touched at all: it is stored under its class name, routed by
- * its package and needs no table — the migration to declared names is per event, and the processor
- * neither catalogs nor nags about events that have not started it. Whether a name is declared is the
- * fact of the override itself, its value is read at runtime.
+ * The catalog is exhaustive, not a list of the events that opted in: a payload carries the
+ * [Event.Key.name] of its event whether that name is declared or derived from the class, so an
+ * event missing from every catalog is an event whose rows nothing can read. Declaring a name
+ * changes what an event is called, never whether it is held.
  *
- * Only events whose key is their companion object are cataloged — that is the documented shape, and
- * it is what ties the key to the class the serializer comes from. A named key declared as a
- * standalone object, or a named event that is not visible outside its file, is reported and left to
- * be registered by hand.
+ * That is also why the shapes a catalog cannot carry are errors rather than warnings: an event that
+ * is not visible outside its file, one whose key is not its companion object — the companion is what
+ * ties the key to the class the serializer comes from — and one that is not `@Serializable`, which
+ * has no serializer to be paired with at all. All three are reported where they are written: make it
+ * internal, give it a companion key, annotate it, or register it by hand with
+ * `EventRegistry.register(key, serializer)`. Failing the build beats leaving a hole that shows up as
+ * an undecodable row months later, or as a startup that dies on an event nobody meant to store.
  */
 class EventCatalogProcessor(
     private val codeGenerator: CodeGenerator,
@@ -60,30 +62,36 @@ class EventCatalogProcessor(
 
     private fun KSClassDeclaration.catalog(event: KSType, key: KSType, file: KSFile) {
         if (Modifier.ABSTRACT in modifiers || Modifier.SEALED in modifiers) return
-        if (classKind == ClassKind.OBJECT && !isCompanionObject &&
-            key.isAssignableFrom(asStarProjectedType()) && declaresName()
-        ) {
-            val standalone = qualifiedName?.asString() ?: return
-            logger.warn(
-                "$standalone declares an event name but is not the companion object of its event, " +
-                    "so the catalog cannot pair it with a serializer. Register it by hand: " +
+        if (!event.isAssignableFrom(asStarProjectedType())) return
+        val name = qualifiedName?.asString() ?: return
+        val companion = declarations.filterIsInstance<KSClassDeclaration>()
+            .firstOrNull { it.isCompanionObject }
+            ?.takeIf { key.isAssignableFrom(it.asStarProjectedType()) }
+        if (classKind != ClassKind.CLASS || companion == null) {
+            logger.error(
+                "$name is an event whose key is not its companion object, so the catalog cannot " +
+                    "pair its name with a serializer and nothing would be able to read its rows " +
+                    "back. Give it `companion object : Key<${simpleName.asString()}>`, or register " +
+                    "it by hand: " +
                     "EventRegistry.register(key, serializer).",
                 this
             )
             return
         }
-        if (classKind != ClassKind.CLASS || !event.isAssignableFrom(asStarProjectedType())) return
-        val name = qualifiedName?.asString() ?: return
-        val companion = declarations.filterIsInstance<KSClassDeclaration>()
-            .firstOrNull { it.isCompanionObject }
-            ?.takeIf { key.isAssignableFrom(it.asStarProjectedType()) }
-        // No declared name — not migrated: stored under its class name, needs no table, nothing to
-        // catalog and nothing to warn about.
-        if (companion == null || !companion.declaresName()) return
         if (getVisibility() !in setOf(Visibility.PUBLIC, Visibility.INTERNAL)) {
-            logger.warn(
-                "$name declares an event name but is not visible outside its file, so the generated " +
-                    "event catalog cannot reference it. Make it internal, or register it by hand.",
+            logger.error(
+                "$name is an event that is not visible outside its file, so the generated event " +
+                    "catalog cannot reference it and nothing would be able to read its rows back. " +
+                    "Make it internal, or register it by hand: EventRegistry.register(key, serializer).",
+                this
+            )
+            return
+        }
+        if (!isSerializable()) {
+            logger.error(
+                "$name is an event that is not @Serializable, so the registry it is cataloged into " +
+                    "could not produce a serializer for it and its rows could be neither written " +
+                    "nor read. Annotate it with @Serializable.",
                 this
             )
             return
@@ -103,14 +111,12 @@ class EventCatalogProcessor(
     }
 
     /**
-     * Whether this key overrides [Event.Key.name]: the property resolves to a declaration of its own
-     * rather than to the derived default of `Event.Key`. The value of the override is a runtime
-     * matter, the fact of it is what separates a migrated event from one left alone.
+     * Whether the event carries `@Serializable`, with or without a serializer of its own: that is
+     * what `KClass.serializer()` looks for when the registry pairs the name of this event with the
+     * way to read it back.
      */
-    private fun KSClassDeclaration.declaresName(): Boolean {
-        val name = getAllProperties().firstOrNull { it.simpleName.asString() == "name" } ?: return false
-        val declaredIn = name.parentDeclaration?.qualifiedName ?: return false
-        return declaredIn.asString() != KEY
+    private fun KSClassDeclaration.isSerializable(): Boolean = annotations.any { annotation ->
+        annotation.annotationType.resolve().declaration.qualifiedName?.asString() == SERIALIZABLE
     }
 
     /**
@@ -159,6 +165,7 @@ class EventCatalogProcessor(
     private companion object {
         const val EVENT = "com.turbomates.event.Event"
         const val KEY = "com.turbomates.event.Event.Key"
+        const val SERIALIZABLE = "kotlinx.serialization.Serializable"
         const val PACKAGE = "com.turbomates.event.catalog"
         const val SERVICE = "META-INF/services/com.turbomates.event.EventCatalog"
         const val HASH_BYTES = 4

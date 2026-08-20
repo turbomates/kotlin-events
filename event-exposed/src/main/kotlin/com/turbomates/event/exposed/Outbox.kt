@@ -214,13 +214,14 @@ class Outbox(
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
      *
-     * Whatever is raised is written. An event whose declared name the registry does not hold makes a
-     * row the sweep cannot decode, and that is left to the sweep: it defers the row and reports it
-     * through [OutboxMetrics.eventFailed] and the error handler of the [OutboxPublisher], while the
+     * Whatever is raised is written. An event whose name the registry does not hold makes a row the
+     * sweep cannot decode, and that is left to the sweep: it defers the row and reports it through
+     * [OutboxMetrics.eventFailed] and the error handler of the [OutboxPublisher], while the
      * transaction that raised it commits. The business data does not depend on the delivery of its
      * events, which is the whole of why the outbox exists — a registry missing an entry is a wiring
-     * mistake of the application, and the compiler reports it: everything the `event-ksp` processor
-     * catalogs is registered by [EventRegistry.discovered], and what it cannot catalog it warns about.
+     * mistake of the application, and the compiler reports it: the `event-ksp` processor catalogs
+     * every event of a module and fails the build on the ones it cannot, so the only way to reach
+     * this is a module compiled without the processor.
      */
     fun batchEventsInsert(raised: List<PublicEvent>) {
         eventsTable.batchInsert(raised) { event ->

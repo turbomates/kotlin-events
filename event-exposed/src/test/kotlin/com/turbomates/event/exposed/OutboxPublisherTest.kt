@@ -35,7 +35,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.testcontainers.containers.PostgreSQLContainer
 
 class OutboxPublisherTest {
-    private val outbox = Outbox(TEST_BUCKET_COUNT, EventRegistry())
+    private val outbox = Outbox(TEST_BUCKET_COUNT, EventRegistry(OutboxEvent, PartitionedOutboxEvent))
     private lateinit var interceptor: OutboxInterceptor
 
     @BeforeEach
@@ -138,7 +138,7 @@ class OutboxPublisherTest {
         // a backoff longer than the test, so the head of the stream is never tried a second time
         val retrying = Outbox(
             TEST_BUCKET_COUNT,
-            EventRegistry(),
+            EventRegistry(OutboxEvent, PartitionedOutboxEvent),
             retryPolicy = OutboxRetryPolicy(initialDelay = 1.hours, maxDelay = 1.hours)
         )
 
@@ -225,7 +225,7 @@ class OutboxPublisherTest {
         val publisher = FlakyPublisher(head, failures = 2)
         val retrying = Outbox(
             TEST_BUCKET_COUNT,
-            EventRegistry(),
+            EventRegistry(OutboxEvent, PartitionedOutboxEvent),
             retryPolicy = OutboxRetryPolicy(initialDelay = 100.milliseconds, multiplier = 1.0)
         )
 

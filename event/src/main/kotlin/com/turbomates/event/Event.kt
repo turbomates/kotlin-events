@@ -52,7 +52,9 @@ abstract class Event {
          * The default derives the name from the class of the key, which is what the routes of this
          * library looked like before names were declared, so an application that declares nothing
          * keeps publishing and consuming exactly what it did. A derived name is as fragile as the
-         * class it comes from and is never written to a stored payload, see [derivedName].
+         * class it comes from — what it is not is a different mechanism: declared or derived, the
+         * name is the routing key, the stored `type` and the [EventRegistry] entry, see
+         * [derivedName].
          */
         @Suppress("DEPRECATION")
         val name: String get() = derivedName()

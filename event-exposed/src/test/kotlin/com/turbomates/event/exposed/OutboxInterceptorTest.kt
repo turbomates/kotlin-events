@@ -65,8 +65,8 @@ class OutboxInterceptorTest {
     fun `an event of a name nothing registered is written all the same`() {
         // The business transaction does not depend on the delivery of its events: an unregistered
         // name costs a row the sweep cannot decode, which it defers and reports, not the work that
-        // raised it. Registration is a fact about the build — the processor catalogs what it can and
-        // warns about the rest.
+        // raised it. Registration is a fact about the build — the processor catalogs every event of
+        // a module and fails the build on the ones it cannot carry.
         createTable()
         transaction(database) {
             events.addEvent(UnregisteredEvent())

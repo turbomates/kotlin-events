@@ -6,9 +6,7 @@ import com.turbomates.event.EventRegistry
 import java.util.ServiceLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.serialization.Serializable
 
@@ -35,13 +33,13 @@ class EventCatalogTest {
     }
 
     @Test
-    fun `an event without a declared name stays out of the catalog`() {
-        // Not migrated: stored under its class name, needs no table — the processor leaves it alone
-        // and the registry never sees it.
+    fun `an event without a declared name is cataloged under the name derived from its class`() {
+        // The catalog is exhaustive: the payload of this event carries its derived name, so a
+        // registry without an entry for it would be a registry that cannot read its rows.
         val cataloged = ServiceLoader.load(EventCatalog::class.java).flatMap { it.keys }
         assertTrue(cataloged.contains(CatalogedEvent))
-        assertFalse(cataloged.contains(CatalogedDerivedEvent))
-        assertNull(EventRegistry.discovered()["event.catalog.cataloged_derived_event"])
+        assertTrue(cataloged.contains(CatalogedDerivedEvent))
+        assertNotNull(EventRegistry.discovered()["event.catalog.cataloged_derived_event"])
     }
 
     @Test

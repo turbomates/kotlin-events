@@ -23,13 +23,13 @@ import kotlinx.serialization.json.putJsonObject
 
 class EventSerializerTest {
     private val json = Json
-    private val serializer = EventRegistry(NamedEvent).serializer
+    private val serializer = EventRegistry(NamedEvent, TestEvent, PartitionedEvent).serializer
 
     @Test
     fun serialize() {
         val event = TestEvent(1, "test")
         assertEquals(buildJsonObject {
-            put("type", TestEvent::class.qualifiedName)
+            put("type", "event.serializer.test_event")
             putJsonObject("body") {
                 put("int", 1)
                 put("string", "test")
@@ -50,7 +50,7 @@ class EventSerializerTest {
         val userId = UUID.randomUUID()
         val event = PartitionedEvent(userId)
         assertEquals(buildJsonObject {
-            put("type", PartitionedEvent::class.qualifiedName)
+            put("type", "event.serializer.partitioned_event")
             putJsonObject("body") {
                 put("userId", userId.toString())
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
@@ -99,21 +99,21 @@ class EventSerializerTest {
     }
 
     @Test
-    fun `a declared name is written even by a registry that does not hold it`() {
+    fun `a name is written even by a registry that does not hold it`() {
         // Publishing needs only the name: the reader is another application with a registry of its
-        // own. What must be able to read its rows back — the outbox — refuses the write instead.
+        // own. Requiring the entry here would fail the publisher of an event nobody local consumes.
         val payload = json.encodeToString(EventRegistry().serializer, NamedEvent("test"))
         assertEquals(true, payload.contains("\"test.serializer.named\""))
     }
 
     @Test
-    fun `an event with no declared name is written without being registered`() {
+    fun `a derived name is written and read back the same way a declared one is`() {
         val event = TestEvent(1, "test")
-        assertEquals(event, json.decodeFromString(serializer, json.encodeToString(EventRegistry().serializer, event)))
+        assertEquals(event, json.decodeFromString(serializer, json.encodeToString(serializer, event)))
     }
 
     @Test
-    fun `a row written before the name was declared is still read by its class`() {
+    fun `a row written before the name reached the payload is still read by its class`() {
         val event = NamedEvent("test")
         val stored = buildJsonObject {
             put("type", NamedEvent::class.qualifiedName)
@@ -127,14 +127,14 @@ class EventSerializerTest {
 }
 
 @Serializable
-private data class TestEvent(val int: Int, val string: String) : Event() {
+internal data class TestEvent(val int: Int, val string: String) : Event() {
     override val key: Key<out Event> = Companion
 
     companion object : Key<TestEvent>
 }
 
 @Serializable
-private data class NamedEvent(val string: String) : Event() {
+internal data class NamedEvent(val string: String) : Event() {
     override val key: Key<out Event> = Companion
 
     companion object : Key<NamedEvent> {
@@ -143,7 +143,7 @@ private data class NamedEvent(val string: String) : Event() {
 }
 
 @Serializable
-private data class PartitionedEvent(
+internal data class PartitionedEvent(
     @Serializable(with = TestUUIDSerializer::class) val userId: UUID
 ) : Event() {
     override val key get() = Companion

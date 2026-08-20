@@ -68,7 +68,9 @@ class RabbitQueue(
      * The events it publishes are the ones to register by hand, nothing here enumerates those.
      */
     private fun register(subscribers: List<EventSubscriber<out Event>>) {
-        val derived = subscribers.map { it.key }.filterNot { events.register(it) }
+        val keys = subscribers.map { it.key }
+        keys.forEach { events.register(it) }
+        val derived = keys.filterNot { it.hasDeclaredName() }
         if (derived.isEmpty()) return
         logger.warn(
             "${derived.size} subscribed events have no declared name and are routed and stored under " +

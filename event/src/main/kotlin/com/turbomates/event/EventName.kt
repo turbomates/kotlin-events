@@ -6,7 +6,7 @@ package com.turbomates.event
  * `billing.subscription.subscription_created`.
  *
  * This is exactly what the routing keys of this library were derived from before names existed, so
- * an application that declares nothing keeps its bindings and its stored rows untouched.
+ * an application that declares nothing keeps its bindings untouched.
  *
  * It is not an identity, it is a shadow of the code: moving the event to another package or renaming
  * it produces a different name, and both the queues bound to the old one and the rows written under
@@ -34,9 +34,10 @@ fun Event.Key<*>.derivedNameOrNull(): String? {
 /**
  * Whether the name of this key was declared rather than derived from its class.
  *
- * Only a declared name is written to a stored payload and only it needs an [EventRegistry] entry: a
- * derived one is no more stable than the class name the payload carried before, so the events of an
- * application that declares nothing keep being stored the way they always were.
+ * Nothing about how the event is stored or registered turns on this — the name is the name either
+ * way. It separates the events that have been given an identity from the ones still carrying the
+ * shape of the code: what is left of it is the routing of a rolling deploy, where the route of an
+ * event changed the moment its name was declared, see `Config.bindLegacyRoutes`.
  */
 @Suppress("DEPRECATION")
 fun Event.Key<*>.hasDeclaredName(): Boolean = name != derivedNameOrNull()

@@ -3,10 +3,11 @@ package com.turbomates.event
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertFalse
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
 class EventRegistryTest {
     @Test
@@ -16,47 +17,93 @@ class EventRegistryTest {
     }
 
     @Test
-    fun `an event with no declared name is not held`() {
-        val registry = EventRegistry()
-        assertFalse(registry.register(Derived))
-        assertNull(registry["registry.test.derived"])
+    fun `an event with no declared name is held under the name derived from its class`() {
+        val registry = EventRegistry(Derived)
+        assertEquals(Derived.serializer().descriptor, registry["turbomates.event.derived"]?.descriptor)
     }
 
     @Test
     fun `registering the same event twice is allowed`() {
         val registry = EventRegistry(Declared)
-        assertTrue(registry.register(Declared))
+        registry.register(Declared)
+        assertNotNull(registry["registry.test.declared"])
+    }
+
+    @Test
+    fun `the same event registered through two serializer instances is one registration`() {
+        // A KSerializer has no equals, and the generated one is a singleton only while the event is
+        // not generic: comparing instances would refuse the second catalog holding a generic event.
+        val registry = EventRegistry()
+        registry.register(Derived, Passthrough())
+        registry.register(Derived, Passthrough())
+        assertNotNull(registry["turbomates.event.derived"])
+    }
+
+    @Test
+    fun `an event is written with the serializer registered for it`() {
+        val registry = EventRegistry()
+        registry.register(Declared, Shouted)
+        assertEquals(true, registry.encode(Declared("quiet")).contains("QUIET"))
     }
 
     @Test
     fun `two events cannot answer one name`() {
         val registry = EventRegistry(Declared)
-        val failure = assertFailsWith<IllegalArgumentException> { registry.register(Colliding) }
+        val failure = assertFailsWith<IllegalArgumentException> {
+            registry.register(key<Derived>("registry.test.declared"), Derived.serializer())
+        }
         assertEquals(true, failure.message?.contains("registry.test.declared"))
     }
 
     @Test
     fun `a name of one segment is refused`() {
-        val failure = assertFailsWith<IllegalArgumentException> { EventRegistry(Flat) }
+        val failure = assertFailsWith<IllegalArgumentException> {
+            EventRegistry().register(key<Derived>("flat"), Derived.serializer())
+        }
         assertEquals(true, failure.message?.contains("flat"))
     }
 
     @Test
     fun `a name that is not snake case is refused`() {
-        assertFailsWith<IllegalArgumentException> { EventRegistry(Camel) }
+        assertFailsWith<IllegalArgumentException> {
+            EventRegistry().register(key<Derived>("registry.test.NotSnakeCase"), Derived.serializer())
+        }
     }
 
     @Test
     fun `a key that is not the companion of its event needs its serializer`() {
-        val failure = assertFailsWith<IllegalArgumentException> { EventRegistry(StandaloneKey) }
+        val standalone = key<Derived>("registry.test.standalone")
+        val failure = assertFailsWith<IllegalArgumentException> { EventRegistry().register(standalone) }
         assertEquals(true, failure.message?.contains("registry.test.standalone"))
-        assertTrue(EventRegistry().register(StandaloneKey, Standalone.serializer()))
+        val registry = EventRegistry()
+        registry.register(standalone, Derived.serializer())
+        assertNotNull(registry["registry.test.standalone"])
+    }
+
+    /**
+     * A key with no class of its own: the registry takes it like any other, and the processor never
+     * sees it, which is what keeps the fixtures of the tests below out of the generated catalog.
+     */
+    private fun <T : Event> key(declared: String) = object : Event.Key<T> {
+        override val name = declared
+    }
+
+    /** The generated serializer of [Derived] in a fresh instance on every construction. */
+    private class Passthrough : KSerializer<Derived> by Derived.serializer()
+
+    /** A serializer of one's own, told apart from the generated one by what it writes. */
+    private object Shouted : KSerializer<Declared> {
+        override val descriptor = Declared.serializer().descriptor
+        override fun serialize(encoder: Encoder, value: Declared) =
+            Declared.serializer().serialize(encoder, Declared(value.value.uppercase()))
+
+        override fun deserialize(decoder: Decoder): Declared = Declared.serializer().deserialize(decoder)
     }
 }
 
 @Serializable
-private data class Declared(val value: String = "") : Event() {
-    override val key: Key<out Event> = Companion
+internal data class Declared(val value: String = "") : Event() {
+    override val key get() = Companion
 
     companion object : Key<Declared> {
         override val name = "registry.test.declared"
@@ -64,45 +111,8 @@ private data class Declared(val value: String = "") : Event() {
 }
 
 @Serializable
-private data class Colliding(val value: String = "") : Event() {
-    override val key: Key<out Event> = Companion
-
-    companion object : Key<Colliding> {
-        override val name = "registry.test.declared"
-    }
-}
-
-@Serializable
-private data class Derived(val value: String = "") : Event() {
-    override val key: Key<out Event> = Companion
+internal data class Derived(val value: String = "") : Event() {
+    override val key get() = Companion
 
     companion object : Key<Derived>
-}
-
-@Serializable
-private data class Flat(val value: String = "") : Event() {
-    override val key: Key<out Event> = Companion
-
-    companion object : Key<Flat> {
-        override val name = "flat"
-    }
-}
-
-@Serializable
-private data class Camel(val value: String = "") : Event() {
-    override val key: Key<out Event> = Companion
-
-    companion object : Key<Camel> {
-        override val name = "registry.test.NotSnakeCase"
-    }
-}
-
-@Serializable
-private data class Standalone(val value: String = "") : Event() {
-    override val key: Key<out Event> = StandaloneKey
-}
-
-
-private object StandaloneKey : Event.Key<Standalone> {
-    override val name = "registry.test.standalone"
 }

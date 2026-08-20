@@ -31,14 +31,14 @@ class EventNameTest {
 }
 
 @Serializable
-private data class WithoutName(val value: String = "") : Event() {
+internal data class WithoutName(val value: String = "") : Event() {
     override val key: Key<out Event> = Companion
 
     companion object : Key<WithoutName>
 }
 
 @Serializable
-private data class WithName(val value: String = "") : Event() {
+internal data class WithName(val value: String = "") : Event() {
     override val key: Key<out Event> = Companion
 
     companion object : Key<WithName> {

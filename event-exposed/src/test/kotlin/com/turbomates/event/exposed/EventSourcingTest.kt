@@ -31,7 +31,7 @@ class EventSourcingTest {
     @Test
     fun `events written through the outbox are read back from storage`() {
         // The storage reads what the outbox wrote, so they share the one registry, see EventRegistry.
-        val registry = EventRegistry()
+        val registry = EventRegistry(TestEventSourcingEvent)
         val outbox = Outbox(TEST_BUCKET_COUNT, registry)
         val eventSourcingStorage = EventSourcingStorage(database, registry)
         val testEvent = TestEventSourcingEvent(UUID.randomUUID().toString())

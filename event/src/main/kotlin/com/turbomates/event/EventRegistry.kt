@@ -10,8 +10,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.serializer
 
 /**
- * The events of an application and how they are written: the declared [Event.Key.name] of each of
- * them mapped to the serializer that reads it back, and the [json] every payload is encoded with.
+ * The events of an application and how they are written: the [Event.Key.name] of each of them mapped
+ * to the serializer that reads it back, and the [json] every payload is encoded with.
  *
  * A stored payload carries a name, and a name is all a reader has: there is no way from
  * `"billing.subscription.created"` to a class other than a table somebody filled, and resolving it
@@ -31,9 +31,10 @@ import kotlinx.serialization.serializer
  * knows the key of every subscriber it starts. Events the application publishes have no such list,
  * they are the ones to pass here.
  *
- * An event that declares no name is not held here at all. Its payload keeps the class name it always
- * carried and is read back the old way, so an application in the middle of the migration — or one
- * that never starts it — needs no registration.
+ * Every event belongs here, whether it declares a name or falls back to the one derived from its
+ * class: the name is what the payload carries either way, so a name nothing is registered under is
+ * a row nothing can read. That is what makes the `event-ksp` catalog exhaustive rather than a list
+ * of the events that opted in — see [discovered].
  *
  * @param json format of every event payload. Build it on top of [DEFAULT_JSON] to add a serializers
  * module of your own, for example contextual serializers of the value types the events carry, and
@@ -56,40 +57,40 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
     }
 
     /**
-     * Registers the event of [key] under its declared name, taking the serializer from the class the
-     * key is the companion object of.
+     * Registers the event of [key] under its name, taking the serializer from the class the key is
+     * the companion object of.
      *
-     * @return false when [key] declares no name, in which case there is nothing to hold: the event
-     * is stored under its class name and read back by it.
-     * @throws IllegalArgumentException when the key declares a name but is not the companion object
-     * of its event — pass the serializer explicitly for such a key.
+     * @throws IllegalArgumentException when the key is not the companion object of its event — pass
+     * the serializer explicitly for such a key.
      */
     @OptIn(InternalSerializationApi::class)
     @Suppress("UNCHECKED_CAST")
-    fun register(key: Event.Key<*>): Boolean {
-        if (!key.hasDeclaredName()) return false
+    fun register(key: Event.Key<*>) {
         val eventClass = key::class.java.declaringClass
         require(eventClass != null && Event::class.java.isAssignableFrom(eventClass)) {
             "The key of event '${key.name}' is not the companion object of its event, so its " +
                 "serializer cannot be found. Register it with the serializer of the event."
         }
-        return put(key, (eventClass.kotlin as KClass<Event>).serializer())
+        put(key, (eventClass.kotlin as KClass<Event>).serializer())
     }
 
     /**
-     * Registers [serializer] under the declared name of [key]. Registering the same event twice is
-     * fine, two events answering one name is not: the second one read back would be the first one.
+     * Registers [serializer] under the name of [key], which is then how the event is written as well
+     * as read — a serializer of your own replaces the generated one in both directions.
      *
-     * @return false when [key] declares no name, see [register].
+     * Registering the same event twice is fine and the first registration stands, two events
+     * answering one name is not: the second one read back would be the first one.
      */
     @Suppress("UNCHECKED_CAST")
-    fun <T : Event> register(key: Event.Key<T>, serializer: KSerializer<T>): Boolean =
+    fun <T : Event> register(key: Event.Key<T>, serializer: KSerializer<T>) =
         put(key, serializer as KSerializer<Event>)
 
-    private fun put(key: Event.Key<*>, serializer: KSerializer<Event>): Boolean {
-        if (!key.hasDeclaredName()) return false
+    private fun put(key: Event.Key<*>, serializer: KSerializer<Event>) {
         val name = key.name
-        require(NAME.matches(name)) {
+        // The form is asked of a declared name only. A derived one is not authored — it is the
+        // shape of the code, and it has been the routing key of that event all along, so refusing
+        // it here would fail the startup of an application that changed nothing.
+        require(!key.hasDeclaredName() || NAME.matches(name)) {
             "Event name '$name' has to be dot separated, snake_case inside a segment and at least " +
                 "two segments long, e.g. 'billing.subscription.created': the dots are the hierarchy " +
                 "a topic exchange matches a binding like 'billing.#' on."
@@ -98,11 +99,19 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
             "Event name '$name' is longer than the $MAX_NAME_LENGTH bytes a routing key can hold"
         }
         val previous = serializers.putIfAbsent(name, serializer)
-        require(previous == null || previous == serializer) {
-            "Two serializers answer the name '$name': either two events share it, or one event was " +
-                "registered twice with different serializers"
+        // Two registrations of one name are the same registration when they read the same class.
+        // Neither the serializers nor the keys answer that: a KSerializer has no equals, and a
+        // generic event builds a fresh one on every serializer() call, while a key is the companion
+        // object of its event in a catalog and a key written for the occasion when it is registered
+        // by hand. The serial name of the descriptor is the class the payload is read as, which is
+        // the whole of what this table holds.
+        if (previous != null) {
+            require(previous.descriptor.serialName == serializer.descriptor.serialName) {
+                "The name '$name' is already the name of ${previous.descriptor.serialName}, " +
+                    "${serializer.descriptor.serialName} cannot answer it too: a stored payload " +
+                    "carries its name and nothing else, so one of the two read back would be the other."
+            }
         }
-        return true
     }
 
     /** The stored form of [event]: `{"type": .., "body": {..}}` in the json of this registry. */
