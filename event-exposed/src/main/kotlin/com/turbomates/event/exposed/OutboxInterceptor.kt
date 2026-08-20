@@ -18,9 +18,6 @@ class OutboxInterceptor(private val outbox: Outbox) : GlobalStatementInterceptor
         save(transaction.events.raiseEvents().toList())
     }
 
-    // An event whose declared name the registry of the outbox does not hold is refused by
-    // batchEventsInsert: the row nothing could decode is never committed, and the failure lands on
-    // the transaction that raised the event rather than on whoever reads it next.
     private fun save(raised: List<Event>) {
         val events = raised.map { PublicEvent(it, traceInformation = outbox.traceInformation()) }
         outbox.batchEventsInsert(events)

@@ -63,10 +63,11 @@ Foundation module providing core event-driven abstractions. All other modules de
   (`EventRegistry.serializer`). The `type` is the declared name, resolved through the registry; an
   event without one is written under its class name and read back by loading it, which is also the
   only way to read a row written before its event declared a name. The serializer itself never
-  refuses a write: publishing to the broker needs only the name — the readers are the subscribers of
-  other applications, each with a registry of its own — so requiring the publisher's registry to
-  hold the event would fail the sweep of an application publishing an event nobody local consumes.
-  The storage, whose reader is the application itself, checks instead, see `Outbox`
+  refuses a write, and neither does the outbox: the business data of a transaction does not depend
+  on the delivery of its events, so a name nothing registered costs a row the sweep cannot decode —
+  deferred and reported through `OutboxMetrics.eventFailed` and the error handler — rather than the
+  work that raised it. Registration is a fact about the build, and the `event-ksp` processor is what
+  reports it: it catalogs what it can and warns about the rest
 - `Publisher` (interface): Core interface for event publication using suspend functions
 - `LocalPublisher`: In-process synchronous event publisher
 - `SubscribersRegistry`: Type-safe registry mapping `Event.Key<T>` to subscribers
@@ -81,7 +82,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 **Key components:**
 - `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, retry policy, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`, `failed`). All of it is called inside a transaction opened by the caller
 - `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. An event whose declared name the registry of the outbox does not hold is refused by `batchEventsInsert` before a row is written — the sweep reads its own rows back, so the transaction that raised the event fails at its author rather than committing a row nothing can decode
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. Whatever is raised is written: an event whose declared name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`

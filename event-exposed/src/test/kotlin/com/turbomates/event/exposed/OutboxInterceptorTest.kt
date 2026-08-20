@@ -4,7 +4,6 @@ import com.turbomates.event.Event
 import com.turbomates.event.EventRegistry
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
@@ -63,16 +62,17 @@ class OutboxInterceptorTest {
     }
 
     @Test
-    fun `an event of a name nothing registered fails the transaction that raised it`() {
+    fun `an event of a name nothing registered is written all the same`() {
+        // The business transaction does not depend on the delivery of its events: an unregistered
+        // name costs a row the sweep cannot decode, which it defers and reports, not the work that
+        // raised it. Registration is a fact about the build — the processor catalogs what it can and
+        // warns about the rest.
         createTable()
-        val failure = assertFailsWith<IllegalStateException> {
-            transaction(database) {
-                events.addEvent(UnregisteredEvent())
-            }
-        }
-        assertEquals(true, failure.message?.contains("interceptor.test.unregistered"))
         transaction(database) {
-            assertEquals(0, outbox.eventsTable.selectAll().count())
+            events.addEvent(UnregisteredEvent())
+        }
+        transaction(database) {
+            assertEquals(1, outbox.eventsTable.selectAll().count())
         }
     }
 

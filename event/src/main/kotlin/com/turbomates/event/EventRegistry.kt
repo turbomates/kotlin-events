@@ -114,16 +114,6 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
     /** Serializer of the event stored under [name], null when no event was registered under it. */
     internal operator fun get(name: String): KSerializer<Event>? = serializers[name]
 
-    /**
-     * Whether a row written for an event of [key] could be read back through this registry: either
-     * the key declares a name registered here, or it declares none and the row carries its class
-     * name. What stores events asks this before writing — the storage is read by the application
-     * that owns it, so its own registry is the authority. A publish to a broker is not checked
-     * against it: those messages are read by the subscribers of other applications, each resolving
-     * the name through a registry of its own.
-     */
-    fun readable(key: Event.Key<*>): Boolean = !key.hasDeclaredName() || serializers.containsKey(key.name)
-
     companion object {
         val DEFAULT_JSON: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }
 

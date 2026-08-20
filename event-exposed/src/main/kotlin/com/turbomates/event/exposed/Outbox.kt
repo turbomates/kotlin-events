@@ -214,21 +214,15 @@ class Outbox(
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
      *
-     * An event whose declared name the registry of this outbox does not hold is refused before a row
-     * is written. The sweep of the outbox reads its own rows back, so an unreadable row is not a
-     * failure that may pass: it would be carried until it is deleted by hand, holding back the whole
-     * stream it belongs to, and an event sourced aggregate with one in its history would never be
-     * rebuilt again. Refusing here fails the transaction that raised the event, at its author,
-     * instead of surfacing days later as a stream that stopped moving.
+     * Whatever is raised is written. An event whose declared name the registry does not hold makes a
+     * row the sweep cannot decode, and that is left to the sweep: it defers the row and reports it
+     * through [OutboxMetrics.eventFailed] and the error handler of the [OutboxPublisher], while the
+     * transaction that raised it commits. The business data does not depend on the delivery of its
+     * events, which is the whole of why the outbox exists — a registry missing an entry is a wiring
+     * mistake of the application, and the compiler reports it: everything the `event-ksp` processor
+     * catalogs is registered by [EventRegistry.discovered], and what it cannot catalog it warns about.
      */
     fun batchEventsInsert(raised: List<PublicEvent>) {
-        raised.forEach { event ->
-            check(events.readable(event.original.key)) {
-                "Event '${event.original.key.name}' is not registered in the EventRegistry of this " +
-                    "outbox: its row could not be read back by the sweep and would never be " +
-                    "published. Pass its key to the registry the outbox was built with."
-            }
-        }
         eventsTable.batchInsert(raised) { event ->
             this[eventsTable.id] = event.id
             this[eventsTable.event] = event.original
