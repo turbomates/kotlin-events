@@ -8,6 +8,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
+import kotlinx.serialization.Contextual
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
@@ -18,12 +19,17 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.contextual
 
 class EventSerializerTest {
     private val json = Json
-    private val serializer = EventRegistry(NamedEvent, TestEvent, PartitionedEvent).serializer
+    private val registry = EventRegistry(NamedEvent, TestEvent, PartitionedEvent, WrappingEvent)
+    private val serializer = registry.serializer
 
     @Test
     fun serialize() {
@@ -124,18 +130,45 @@ class EventSerializerTest {
         }
         assertEquals(event, json.decodeFromJsonElement(serializer, stored))
     }
+
+    @Test
+    fun `an event carrying another event writes it as a type and a body of its own`() {
+        val payload = json.parseToJsonElement(registry.encode(WrappingEvent(NamedEvent("inner")))).jsonObject
+        assertEquals("test.serializer.wrapping", payload.getValue("type").jsonPrimitive.content)
+        val nested = payload.getValue("body").jsonObject.getValue("originalEvent").jsonObject
+        assertEquals("test.serializer.named", nested.getValue("type").jsonPrimitive.content)
+        assertEquals("inner", nested.getValue("body").jsonObject.getValue("string").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `an event carrying another event is read back through the registry`() {
+        val event = WrappingEvent(NamedEvent("inner"))
+        assertEquals(event, registry.decode(registry.encode(event)))
+    }
+
+    @Test
+    fun `a contextual Event of the application is left where it is`() {
+        val events = EventRegistry(
+            NamedEvent,
+            WrappingEvent,
+            json = Json(from = EventRegistry.DEFAULT_JSON) {
+                serializersModule = SerializersModule { contextual(Event::class, StringEventSerializer) }
+            }
+        )
+        assertEquals(true, events.encode(WrappingEvent(NamedEvent("inner"))).contains("\"originalEvent\":\"inner\""))
+    }
 }
 
 @Serializable
 internal data class TestEvent(val int: Int, val string: String) : Event() {
-    override val key: Key<out Event> = Companion
+    override val key get() = Companion
 
     companion object : Key<TestEvent>
 }
 
 @Serializable
 internal data class NamedEvent(val string: String) : Event() {
-    override val key: Key<out Event> = Companion
+    override val key get() = Companion
 
     companion object : Key<NamedEvent> {
         override val name = "test.serializer.named"
@@ -150,6 +183,23 @@ internal data class PartitionedEvent(
     override val partitionKey get() = userId
 
     companion object : Key<PartitionedEvent>
+}
+
+/** An event carrying another one, the field the contextual [Event] of the registry is there for. */
+@Serializable
+internal data class WrappingEvent(@Contextual val originalEvent: Event) : Event() {
+    override val key get() = Companion
+
+    companion object : Key<WrappingEvent> {
+        override val name = "test.serializer.wrapping"
+    }
+}
+
+/** A contextual [Event] of an application, to check the registry does not take the slot from it. */
+private object StringEventSerializer : KSerializer<Event> {
+    override val descriptor: SerialDescriptor = PrimitiveSerialDescriptor("own.event", PrimitiveKind.STRING)
+    override fun deserialize(decoder: Decoder): Event = NamedEvent(decoder.decodeString())
+    override fun serialize(encoder: Encoder, value: Event) = encoder.encodeString((value as NamedEvent).string)
 }
 
 private object TestUUIDSerializer : KSerializer<UUID> {

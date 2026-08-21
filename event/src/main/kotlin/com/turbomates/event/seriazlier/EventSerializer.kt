@@ -39,7 +39,10 @@ import kotlinx.serialization.serializer
  * rows are gone, or their `type` migrated.
  *
  * Take the instance from [EventRegistry.serializer] instead of building one, so everything that
- * reads and writes the events of an application resolves names through the same registry.
+ * reads and writes the events of an application resolves names through the same registry. The
+ * registry also registers it as the contextual serializer of [Event] in the json of its payloads,
+ * which is what makes a `@Contextual` [Event] field of an event work without an application
+ * building this class over a registry of its own.
  */
 class EventSerializer(private val registry: EventRegistry) : KSerializer<Event> {
     override val descriptor: SerialDescriptor = buildClassSerialDescriptor("Event") {
