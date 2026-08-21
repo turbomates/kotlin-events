@@ -365,6 +365,26 @@ A row is written as `{"type": <declared name or class>, "body": {...}}`. A table
 rows can only be read back by something that understands them, so changing that shape is a migration,
 not a setting.
 
+An event that carries another event — a delivery that failed, the event a saga step reacts to,
+anything wrapping an event whose type it does not declare — writes the field as `@Contextual`:
+
+```kotlin
+@Serializable
+class PublishingFailed(@Contextual val originalEvent: Event, val reason: String) : Event() {
+    override val key get() = Companion
+
+    companion object : Key<PublishingFailed> {
+        override val name = "outbox.publishing.failed"
+    }
+}
+```
+
+The registry puts its own serializer into the `Json` it hands out as the contextual serializer of
+`Event`, so the nested event is stored as the same `{"type": .., "body": {...}}` as the row around it,
+its name resolved through the same table. Nothing is registered by the application for this: an
+`Event` is read back from a name, and the table from a name to a serializer is the registry. A
+serializers module that registers a contextual `Event` of its own keeps it.
+
 **Schema:**
 
 `event-exposed` ships `outbox_events_postgres_table.sql` for a new database. One that already runs

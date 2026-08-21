@@ -7,6 +7,9 @@ import kotlin.reflect.KClass
 import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.modules.SerializersModule
+import kotlinx.serialization.modules.contextual
+import kotlinx.serialization.modules.overwriteWith
 import kotlinx.serialization.serializer
 
 /**
@@ -42,15 +45,41 @@ import kotlinx.serialization.serializer
  * ```
  * EventRegistry(SubscriptionCreated, json = Json(from = EventRegistry.DEFAULT_JSON) { serializersModule = domain })
  * ```
+ * The registry adds [serializer] to it as the contextual serializer of [Event], see [format].
  */
-class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_JSON) {
+class EventRegistry(vararg keys: Event.Key<*>, json: Json = DEFAULT_JSON) {
     private val serializers = ConcurrentHashMap<String, KSerializer<Event>>()
 
     /**
      * Serializer of the stored payload, `{"type": .., "body": {..}}`, resolving the `type` through
-     * this registry — what [encode] and [decode] write and read with.
+     * this registry — what [encode] and [decode] write and read with, and the contextual serializer
+     * of [Event] in [format].
      */
-    internal val serializer: KSerializer<Event> by lazy { EventSerializer(this) }
+    internal val serializer: KSerializer<Event> = EventSerializer(this)
+
+    /**
+     * The json of every payload: the one the registry was built with, plus [serializer] registered
+     * as the contextual serializer of [Event].
+     *
+     * An event that carries another one — a delivery that failed, the event a saga step reacts to,
+     * anything wrapping an event it did not declare the type of — writes the field as
+     * ```
+     * @Contextual val originalEvent: Event
+     * ```
+     * and the nested event is stored as the same `{"type": .., "body": {..}}` as the row around it,
+     * its name resolved through this registry. Without the registration such a field has no
+     * serializer at all: an `Event` is read back from a name, and the table from a name to a
+     * serializer is the registry — which is why the knot is tied here, where the table is, rather
+     * than by every application building an [EventSerializer] over a registry of its own and
+     * hoping it is the same one.
+     *
+     * A serializers module that registers a contextual [Event] of its own keeps it: this fills a
+     * slot nobody filled, it does not claim one.
+     */
+    private val format: Json = Json(from = json) {
+        serializersModule = SerializersModule { contextual(Event::class, serializer) }
+            .overwriteWith(json.serializersModule)
+    }
 
     init {
         keys.forEach { register(it) }
@@ -115,10 +144,10 @@ class EventRegistry(vararg keys: Event.Key<*>, private val json: Json = DEFAULT_
     }
 
     /** The stored form of [event]: `{"type": .., "body": {..}}` in the json of this registry. */
-    fun encode(event: Event): String = json.encodeToString(serializer, event)
+    fun encode(event: Event): String = format.encodeToString(serializer, event)
 
     /** The event a stored payload holds, its `type` resolved through this registry. */
-    fun decode(payload: String): Event = json.decodeFromString(serializer, payload)
+    fun decode(payload: String): Event = format.decodeFromString(serializer, payload)
 
     /** Serializer of the event stored under [name], null when no event was registered under it. */
     internal operator fun get(name: String): KSerializer<Event>? = serializers[name]

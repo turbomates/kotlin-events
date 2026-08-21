@@ -63,7 +63,13 @@ Foundation module providing core event-driven abstractions. All other modules de
   are refused, which is also how a collision between two derived names is finally diagnosed. The form
   (`snake_case`, two segments) is asked of a declared name only — a derived one has been the routing
   key of that event all along, and refusing it would fail the startup of an application that changed
-  nothing. Consumers register themselves, see `RabbitQueue`
+  nothing. Consumers register themselves, see `RabbitQueue`. The `Json` the registry encodes with is
+  the one it was given plus its own `EventSerializer` registered as the contextual serializer of
+  `Event`, so an event carrying another one declares `@Contextual val originalEvent: Event` and
+  nothing else — an `Event` is read back from a name and the table from a name to a serializer is
+  the registry, so the knot is tied where the table is instead of by every application building an
+  `EventSerializer` over a registry of its own. A serializers module that registers a contextual
+  `Event` of its own keeps it
 - `EventSerializer`: `{"type": .., "body": {..}}` of a stored event, a class over an `EventRegistry`
   (`EventRegistry.serializer`). The `type` is the name of the event, resolved back through the
   registry, and the `body` is written with the same entry it is read with, so an event registered
