@@ -2,7 +2,6 @@ package com.turbomates.event.serializer
 
 import com.turbomates.event.Event
 import com.turbomates.event.EventRegistry
-import com.turbomates.event.seriazlier.LocalDateTimeSerializer
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -25,7 +24,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlinx.serialization.modules.SerializersModule
-import kotlinx.serialization.modules.contextual
 
 class EventSerializerTest {
     private val json = Json

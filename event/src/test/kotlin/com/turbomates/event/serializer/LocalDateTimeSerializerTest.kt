@@ -1,6 +1,5 @@
 package com.turbomates.event.serializer
 
-import com.turbomates.event.seriazlier.LocalDateTimeSerializer
 import java.time.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals

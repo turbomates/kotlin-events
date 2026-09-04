@@ -1,4 +1,4 @@
-package com.turbomates.event.seriazlier
+package com.turbomates.event.serializer
 
 import java.util.UUID
 import kotlinx.serialization.KSerializer

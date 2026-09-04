@@ -1,7 +1,7 @@
 package com.turbomates.event
 
-import com.turbomates.event.seriazlier.LocalDateTimeSerializer
-import com.turbomates.event.seriazlier.UUIDSerializer
+import com.turbomates.event.serializer.LocalDateTimeSerializer
+import com.turbomates.event.serializer.UUIDSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.UUID

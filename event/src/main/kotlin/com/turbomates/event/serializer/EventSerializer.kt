@@ -1,4 +1,4 @@
-package com.turbomates.event.seriazlier
+package com.turbomates.event.serializer
 
 import com.turbomates.event.Event
 import com.turbomates.event.EventRegistry
