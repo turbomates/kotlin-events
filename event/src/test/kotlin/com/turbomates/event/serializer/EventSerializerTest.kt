@@ -7,6 +7,7 @@ import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlinx.serialization.Contextual
 import kotlinx.serialization.KSerializer
@@ -39,6 +40,7 @@ class EventSerializerTest {
             putJsonObject("body") {
                 put("int", 1)
                 put("string", "test")
+                put("eventId", event.eventId.toString())
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
             }
         }, json.encodeToJsonElement(serializer, event))
@@ -48,7 +50,17 @@ class EventSerializerTest {
     fun deserialize() {
         val event = TestEvent(1, "test")
         val string = json.encodeToString(serializer, event)
-        assertEquals(event, json.decodeFromString(serializer, string))
+        val read = json.decodeFromString(serializer, string)
+        assertEquals(event, read)
+        assertEquals(event.eventId, read.eventId, "the consumer reads the id the producer wrote")
+    }
+
+    @Test
+    fun `event id is a uuid v7 of its own`() {
+        val one = TestEvent(1, "test")
+        val other = TestEvent(1, "test")
+        assertEquals(7, one.eventId.version())
+        assertNotEquals(one.eventId, other.eventId)
     }
 
     @Test
@@ -59,6 +71,7 @@ class EventSerializerTest {
             put("type", "event.serializer.partitioned_event")
             putJsonObject("body") {
                 put("userId", userId.toString())
+                put("eventId", event.eventId.toString())
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
             }
         }, json.encodeToJsonElement(serializer, event))
@@ -84,6 +97,7 @@ class EventSerializerTest {
             put("type", "test.serializer.named")
             putJsonObject("body") {
                 put("string", "test")
+                put("eventId", event.eventId.toString())
                 put("timestamp", event.timestamp.format(LocalDateTimeSerializer.utcDateTimeFormat))
             }
         }, json.encodeToJsonElement(serializer, event))

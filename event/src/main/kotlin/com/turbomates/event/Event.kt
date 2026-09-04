@@ -1,6 +1,7 @@
 package com.turbomates.event
 
 import com.turbomates.event.seriazlier.LocalDateTimeSerializer
+import com.turbomates.event.seriazlier.UUIDSerializer
 import java.time.LocalDateTime
 import java.time.ZoneOffset
 import java.util.UUID
@@ -9,6 +10,16 @@ import kotlinx.serialization.Transient
 
 @Serializable
 abstract class Event {
+    /**
+     * Identity of this occurrence of the event, a UUIDv7 assigned when the event is created.
+     *
+     * It is the `id` of the outbox and event sourcing rows the event is stored as and it travels
+     * in the payload, so the consumer reads the very id the producer wrote instead of one made
+     * up on the way — a redelivery is recognised by it. Generated, never assigned by hand.
+     */
+    @Serializable(with = UUIDSerializer::class)
+    val eventId: UUID = uuidV7()
+
     @Serializable(with = LocalDateTimeSerializer::class)
     val timestamp: LocalDateTime = LocalDateTime.now(ZoneOffset.UTC)
     abstract val key: Key<out Event>

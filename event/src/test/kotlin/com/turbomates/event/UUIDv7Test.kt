@@ -1,4 +1,4 @@
-package com.turbomates.event.exposed
+package com.turbomates.event
 
 import kotlin.test.Test
 import kotlin.test.assertEquals

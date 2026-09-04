@@ -233,7 +233,7 @@ class Outbox(
             this[eventsTable.traceInformation] = event.traceInformation
         }
         sourcingTable.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
-            this[sourcingTable.id] = uuidV7()
+            this[sourcingTable.id] = event.eventId
             this[sourcingTable.rootId] = event.rootId
             this[sourcingTable.event] = event
             this[sourcingTable.createdAt] = event.timestamp
