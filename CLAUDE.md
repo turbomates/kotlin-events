@@ -44,7 +44,10 @@ Foundation module providing core event-driven abstractions. All other modules de
 
 **Key abstractions:**
 - `Event` (abstract class): Base class for all events with `Event.Key<T>` for type-safe routing and an
-  optional `partitionKey` (`@Transient`, override with a getter) that keeps a stream of events together
+  optional `partitionKey` (`@Transient`, override with a getter) that keeps a stream of events together.
+  `eventId` is a UUIDv7 (`kotlin.uuid.Uuid.generateV7`) assigned on creation and written into the
+  payload: it is the `id` of the outbox and event sourcing rows, and the consumer reads the id the
+  producer wrote
 - `Event.Key.name`: The identity of an event — its routing key and the `type` of its stored payload.
   Declared by hand (`override val name = "billing.subscription.created"`), dot separated and
   `snake_case`, so a rename or a move of the class orphans nothing. Defaults to `derivedName()`, the
@@ -98,7 +101,7 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 - `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
 - `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. Whatever is raised is written: an event whose name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
-- `PublicEvent`: Wrapper with UUIDv7 id, timestamp, bucket, and trace information for persistence
+- `PublicEvent`: Wrapper of the event and its trace information for persistence; `id` and `createdAt` are the `eventId` and `timestamp` of the event
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
 - `OutboxMetrics`: Per-bucket lag, batch size, owned buckets, per-event failures, total outbox depth on its own ticker, for the application registry (default `NoOpOutboxMetrics`)
 - `FailedEvent`: What the `errorHandler` of `OutboxPublisher` is called with, together with the

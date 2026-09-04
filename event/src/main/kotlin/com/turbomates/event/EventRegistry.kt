@@ -1,6 +1,6 @@
 package com.turbomates.event
 
-import com.turbomates.event.seriazlier.EventSerializer
+import com.turbomates.event.serializer.EventSerializer
 import java.util.ServiceLoader
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
@@ -8,7 +8,6 @@ import kotlinx.serialization.InternalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.modules.SerializersModule
-import kotlinx.serialization.modules.contextual
 import kotlinx.serialization.modules.overwriteWith
 import kotlinx.serialization.serializer
 
