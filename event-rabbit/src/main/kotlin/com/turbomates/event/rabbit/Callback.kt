@@ -103,9 +103,9 @@ internal class ListenerDeliveryCallback(
     private suspend fun process(message: Delivery, waited: Duration) {
         val carrier = message.properties.headers ?: emptyMap()
         val traceInformation = TraceInformation(
-            carrier[QueueConfig.TRACEPARENT_HEADER] as? String,
-            carrier[QueueConfig.TRACESTATE_HEADER] as? String,
-            carrier[QueueConfig.BAGGAGE_HEADER] as? String,
+            carrier.stringHeader(QueueConfig.TRACEPARENT_HEADER),
+            carrier.stringHeader(QueueConfig.TRACESTATE_HEADER),
+            carrier.stringHeader(QueueConfig.BAGGAGE_HEADER),
         )
         val attributes = mapOf<String, String>(
             "messaging.rabbitmq.delivery_tag" to message.envelope.deliveryTag.toString(),
@@ -234,6 +234,21 @@ internal class ListenerDeliveryCallback(
     }
 }
 
+/**
+ * A string header as the amqp client hands it over. A value the publisher set as a `String` goes
+ * over the wire as a field table string (`'S'`) and comes back as a `LongString`, not a `String`:
+ * `as? String` on it is null, silently, and the trace of every delivery was lost that way. A
+ * `ByteArray` is what a client of another language may put there, everything else is left to its
+ * `toString()` — which is how a `LongString` gives up its utf-8 content. A header that is absent, or
+ * present with the `'V'` (void) type a null is sent as, is null and never the string `"null"`.
+ */
+internal fun Map<String, Any?>.stringHeader(name: String): String? =
+    when (val value = this[name]) {
+        null -> null
+        is String -> value
+        is ByteArray -> String(value, Charsets.UTF_8)
+        else -> value.toString()
+    }
 
 /**
  * The broker cancelled the consumer without being asked to — its queue was deleted or lost its

@@ -78,7 +78,7 @@ class RabbitPublisher(
                 mapOf(
                     QueueConfig.TRACEPARENT_HEADER to trace.traceparent,
                     QueueConfig.TRACESTATE_HEADER to trace.tracestate,
-                    QueueConfig.BAGGAGE_HEADER to trace.toString()
+                    QueueConfig.BAGGAGE_HEADER to trace.baggage
                 )
             )
         }
