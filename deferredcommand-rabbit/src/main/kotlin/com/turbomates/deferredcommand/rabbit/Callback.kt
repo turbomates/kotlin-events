@@ -77,7 +77,7 @@ internal class ListenerDeliveryCallback(
         telemetryService.link(traceInformation, "deferredcommand.rabbit.worker", attributes) {
             val commandJsonString = String(message.body)
             try {
-                logger.info("Deferred command $commandJsonString accepted")
+                logger.info("Deferred command $commandJsonString accepted by ${config.queueName}")
                 val command = json.decodeFromString(DeferredCommandSerializer, commandJsonString)
                 val callback = subscribers[command.key] as? DeferredCommandSubscriber<DeferredCommand>
                 callback?.invoke(command)

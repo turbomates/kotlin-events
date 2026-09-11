@@ -122,7 +122,7 @@ internal class ListenerDeliveryCallback(
             val eventJsonString = String(message.body)
             val startedAt = TimeSource.Monotonic.markNow()
             try {
-                logger.info("Event $eventJsonString accepted ")
+                logger.info("Event $eventJsonString accepted by $queue")
                 val event = events.decode(eventJsonString)
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
                 if (callback == null) {
