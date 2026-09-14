@@ -6,12 +6,12 @@ import com.rabbitmq.client.ConsumerShutdownSignalCallback
 import com.rabbitmq.client.DeliverCallback
 import com.rabbitmq.client.Delivery
 import com.rabbitmq.client.ShutdownSignalException
-import java.util.concurrent.atomic.AtomicBoolean
 import com.turbomates.event.Event
 import com.turbomates.event.EventRegistry
 import com.turbomates.event.EventSubscriber
 import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
 import kotlin.time.TimeMark
 import kotlin.time.TimeSource
@@ -118,12 +118,16 @@ internal class ListenerDeliveryCallback(
         val queue = config.queueName
         val routingKey = message.envelope.routingKey
         val retries = message.properties.retryCount()
-        telemetryService.link(traceInformation, "kotlin.event.rabbit.worker", attributes) {
+        telemetryService.link(traceInformation, "rabbit $queue", attributes) {
             val eventJsonString = String(message.body)
             val startedAt = TimeSource.Monotonic.markNow()
             try {
+<<<<<<< Updated upstream
                 logger.info("Event $eventJsonString accepted by $queue")
+=======
+>>>>>>> Stashed changes
                 val event = events.decode(eventJsonString)
+                logger.info("Event ${event.eventId} accepted ")
                 val callback = subscribers[event.key] as? EventSubscriber<Event>
                 if (callback == null) {
                     // The queue is bound to a key this consumer has no subscriber for: the delivery
@@ -302,7 +306,7 @@ internal class ListenerShutdownCallback(
             } else {
                 logger.error(
                     "Connection of $queue went down and automatic recovery is off, " +
-                        "consumer $consumerTag is lost until the application restarts",
+                            "consumer $consumerTag is lost until the application restarts",
                     signal
                 )
             }
