@@ -308,6 +308,14 @@ Events are published in the order they were raised: the order inside a transacti
 `EventStore`, the order in the table by the database-assigned `sequence` column — client timestamps
 are neither unique nor monotonic across pods, so they are data, not ordering.
 
+With `useNestedTransactions` a nested transaction is a savepoint of the outer one. Its events are not
+written to `outbox_events` when it commits: they are handed over to the outer transaction, and the
+outermost one writes all of them with a single insert when it commits, the events of its nested
+transactions first. A nested transaction that rolls back takes its own events with it and leaves the
+others. Until that commit the rows are not in `outbox_events`, for the transaction itself too. The rows
+of `event_sourcing` are written by the transaction that raised the events, nested or not, so the rest of
+the outer one can read the history back. `Outbox.batchEventsInsert` called by hand still writes at once.
+
 **The event registry:**
 
 A stored payload and a routed message carry the declared `Event.Key.name`, and a name is all a reader

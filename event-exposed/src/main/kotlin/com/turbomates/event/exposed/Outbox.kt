@@ -224,6 +224,11 @@ class Outbox(
      * this is a module compiled without the processor.
      */
     fun batchEventsInsert(raised: List<PublicEvent>) {
+        insertEvents(raised)
+        insertHistory(raised)
+    }
+
+    internal fun insertEvents(raised: List<PublicEvent>) {
         eventsTable.batchInsert(raised) { event ->
             this[eventsTable.id] = event.id
             this[eventsTable.event] = event.original
@@ -232,6 +237,9 @@ class Outbox(
             this[eventsTable.createdAt] = event.createdAt
             this[eventsTable.traceInformation] = event.traceInformation
         }
+    }
+
+    internal fun insertHistory(raised: List<PublicEvent>) {
         sourcingTable.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
             this[sourcingTable.id] = event.eventId
             this[sourcingTable.rootId] = event.rootId
