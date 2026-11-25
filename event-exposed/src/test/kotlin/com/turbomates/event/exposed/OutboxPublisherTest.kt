@@ -69,6 +69,46 @@ class OutboxPublisherTest {
     }
 
     @Test
+    fun `every statement and commit of the publisher runs inside a span of the outbox telemetry`() = runBlocking {
+        val telemetry = ScopedTelemetry()
+        val traced = Outbox(TEST_BUCKET_COUNT, EventRegistry(OutboxEvent, PartitionedOutboxEvent), telemetryService = telemetry)
+        val recorder = StatementRecorder()
+        val publisher = CollectingPublisher()
+        val event = PublicEvent(OutboxEvent(UUID.randomUUID()))
+        insert(event)
+
+        JdbcTransaction.globalInterceptors.add(recorder)
+        val job = OutboxPublisher(
+            database, listOf(publisher), traced, delay = POLL_DELAY, depthInterval = POLL_DELAY
+        ).start()
+        try {
+            awaitUntil {
+                publisher.published.isNotEmpty() &&
+                    telemetry.opened.count { it.name == OutboxPublisher.DEPTH_SPAN } > 1 &&
+                    telemetry.opened.count { it.name == OutboxPublisher.POLL_SPAN } > TEST_BUCKET_COUNT
+            }
+        } finally {
+            job.cancelAndJoin()
+            JdbcTransaction.globalInterceptors.remove(recorder)
+        }
+
+        val ofPublisher = recorder.entries.toList().filter { it.thread.startsWith("DefaultDispatcher") }
+        assertTrue(ofPublisher.isNotEmpty())
+        assertEquals(emptyList(), ofPublisher.filter { it.span == null }, "statements outside of a span")
+        val commits = ofPublisher.filter { it.what == StatementRecorder.COMMIT }.map { it.span }.toSet()
+        assertEquals(setOf(OutboxPublisher.POLL_SPAN, OutboxPublisher.PUBLISH_SPAN, OutboxPublisher.DEPTH_SPAN), commits)
+        assertTrue(ofPublisher.any { it.span == OutboxPublisher.POLL_SPAN && "pg_try_advisory_xact_lock" in it.what })
+        assertTrue(ofPublisher.any { it.span == OutboxPublisher.PUBLISH_SPAN && it.what.startsWith("DELETE") })
+        val publish = telemetry.opened.single { it.name == OutboxPublisher.PUBLISH_SPAN }
+        assertEquals(TraceInformation(null, null, null), publish.origin)
+        assertEquals(event.id.toString(), publish.attributes[OutboxPublisher.EVENT_ID_ATTRIBUTE])
+        assertEquals(OutboxEvent.name, publish.attributes[OutboxPublisher.EVENT_NAME_ATTRIBUTE])
+        val buckets = telemetry.opened.filter { it.name == OutboxPublisher.POLL_SPAN }
+            .mapNotNull { it.attributes[OutboxPublisher.BUCKET_ATTRIBUTE]?.toInt() }
+        assertTrue(buckets.containsAll((0 until TEST_BUCKET_COUNT).toList()), "a poll span per bucket, got $buckets")
+    }
+
+    @Test
     fun `publishes every bucket`() = runBlocking {
         val events = (1..TEST_BUCKET_COUNT * 4).map { PublicEvent(OutboxEvent(UUID.randomUUID())) }
         events.forEach { insert(it) }

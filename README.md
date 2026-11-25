@@ -575,6 +575,9 @@ val tracer = openTelemetry.getTracer("my-service")
 - Trace information flows: Application → Outbox → RabbitMQ → Consumer
 - Each step creates child spans for distributed trace visibility
 - Falls back to no-op if OpenTelemetry is not configured
+- The outbox publishers open a span around every poll (`outbox poll`, `outbox depth`,
+  `deferred command poll`) and one per published row (`outbox publish`, `deferred command publish`)
+  linked to the trace stored with it; drop the poll roots in your sampler if idle polling is noise
 
 ## Complete Example
 

@@ -67,7 +67,7 @@ class Outbox(
     private val batchLimit: Int = DEFAULT_BATCH_LIMIT,
     private val bucketLock: OutboxBucketLock = PostgresAdvisoryBucketLock(),
     private val retryPolicy: OutboxRetryPolicy = OutboxRetryPolicy(),
-    private val telemetryService: Telemetry = NoOpTelemetry(),
+    internal val telemetryService: Telemetry = NoOpTelemetry(),
 ) {
     init {
         require(bucketCount in 1..MAX_BUCKET_COUNT) {
