@@ -1,8 +1,6 @@
 package com.turbomates.event.exposed
 
 import com.turbomates.event.EventStore
-import java.util.Queue
-import java.util.concurrent.ConcurrentLinkedQueue
 import org.jetbrains.exposed.v1.core.Key
 import org.jetbrains.exposed.v1.core.Transaction
 import org.jetbrains.exposed.v1.core.statements.GlobalStatementInterceptor
@@ -14,46 +12,30 @@ import org.jetbrains.exposed.v1.jdbc.JdbcTransaction
  * business data. Register it with [Outbox.install], it is not picked up by a service loader: it needs
  * the bucket count and the serialization the application is running with.
  *
- * A nested transaction is a savepoint on the connection of the outer one, its commit reaches nothing
- * but the interceptors. So it writes no outbox rows of its own, it hands its events over to the outer
- * transaction, and the outermost one writes them all with one insert. A rollback to the savepoint
- * takes the events of the nested transaction with it, handed over or not.
- *
- * The history of an event sourced aggregate does not wait: the rest of the outer transaction may
- * restore the aggregate from it, so it is written by the transaction that raised the events.
+ * A nested transaction is a savepoint on the connection of the outer one. With [OutboxConnections] its
+ * commit defers the events, and the commit of the outermost transaction writes all of them at once.
  */
-class OutboxInterceptor(private val outbox: Outbox) : GlobalStatementInterceptor {
+class OutboxInterceptor(internal val outbox: Outbox) : GlobalStatementInterceptor {
 
     override fun beforeCommit(transaction: Transaction) {
         val raised = transaction.events.raiseEvents().toList().map {
             PublicEvent(it, traceInformation = outbox.traceInformation())
         }
-        outbox.insertHistory(raised)
-        val events = transaction.handedOver.drain() + raised
-        val outer = transaction.outer
-        if (outer == null) {
-            outbox.insertEvents(events)
+        if (transaction is JdbcTransaction && transaction.outerTransaction != null) {
+            outbox.batchEventsInsert(raised)
         } else {
-            outer.handedOver.addAll(events.map { HandedOver(transaction, it) })
+            outbox.write(transaction.deferring?.drain().orEmpty() + raised, history = raised)
         }
     }
-
-    override fun beforeRollback(transaction: Transaction) {
-        transaction.outer?.handedOver?.removeIf { it.by === transaction }
-    }
-
-    private val Transaction.outer: Transaction? get() = (this as? JdbcTransaction)?.outerTransaction
-
-    /** Concurrent: nested transactions of one outer transaction may be running side by side. */
-    private val Transaction.handedOver: Queue<HandedOver> get() = getOrCreate(HANDED_OVER) { ConcurrentLinkedQueue() }
-
-    private fun Queue<HandedOver>.drain(): List<PublicEvent> = generateSequence { poll() }.map { it.event }.toList()
-
-    private class HandedOver(val by: Transaction, val event: PublicEvent)
-
-    private companion object {
-        val HANDED_OVER = Key<Queue<HandedOver>>()
-    }
 }
+
+/** The connection of an outermost transaction, once it deferred an event: asking for it opens one. */
+internal var Transaction.deferring: OutboxConnection<*>?
+    get() = getUserData(DEFERRING)
+    set(value) {
+        if (value != null) putUserData(DEFERRING, value)
+    }
+
+private val DEFERRING = Key<OutboxConnection<*>>()
 
 val Transaction.events: EventStore by transactionScope { getOrCreate(Key()) { EventStore() } }

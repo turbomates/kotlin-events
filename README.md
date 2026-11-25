@@ -308,13 +308,23 @@ Events are published in the order they were raised: the order inside a transacti
 `EventStore`, the order in the table by the database-assigned `sequence` column — client timestamps
 are neither unique nor monotonic across pods, so they are data, not ordering.
 
-With `useNestedTransactions` a nested transaction is a savepoint of the outer one. Its events are not
-written to `outbox_events` when it commits: they are handed over to the outer transaction, and the
-outermost one writes all of them with a single insert when it commits, the events of its nested
-transactions first. A nested transaction that rolls back takes its own events with it and leaves the
-others. Until that commit the rows are not in `outbox_events`, for the transaction itself too. The rows
-of `event_sourcing` are written by the transaction that raised the events, nested or not, so the rest of
-the outer one can read the history back. `Outbox.batchEventsInsert` called by hand still writes at once.
+With `useNestedTransactions` a nested transaction is a savepoint of the outer one, and every one of them
+that raised an event makes an insert of its own. Connect the database with `OutboxConnections` to have all
+of them written by a single insert, on the commit of the outermost transaction:
+
+```kotlin
+Database.connect(
+    dataSource,
+    databaseConfig = DatabaseConfig { useNestedTransactions = true },
+    connectionAutoRegistration = OutboxConnections()
+)
+```
+
+The order stays the one the transactions committed in, and a rollback to a savepoint takes the events with
+the data it discards. Until the outermost commit the rows are not in `outbox_events`, for the transaction
+itself too, and so are the ones `Outbox.batchEventsInsert` is called with after a transaction was nested.
+The rows of `event_sourcing` are always written at once. The connection of a transaction is not a
+`JdbcConnectionImpl` then: take the JDBC one from `connection.connection`.
 
 **The event registry:**
 
