@@ -99,7 +99,8 @@ Implements the transactional outbox pattern using Exposed ORM for PostgreSQL.
 **Key components:**
 - `Outbox`: Everything the outbox is made of, built by the application and shared by the interceptor and the publisher: bucket count and batch limit, serialization, bucket lock, retry policy, table instances, and the queries over them (`batchEventsInsert`, `nextSweep`, `tryLock`, `load`, `delete`, `failed`). All of it is called inside a transaction opened by the caller
 - `OutboxRetryPolicy`: Exponential backoff of a failing event (`initialDelay * multiplier^(N-1)`, capped at `maxDelay`); no attempt limit and no dead-letter table on purpose — giving an event up would break the order of its stream, the unrecoverable row is deleted by hand
-- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to `Outbox.batchEventsInsert`, registered with `Outbox.install()`. Whatever is raised is written: an event whose name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
+- `OutboxInterceptor`: Global Exposed interceptor that captures events during transactions via `EventStore` and hands them to the `Outbox`, registered with `Outbox.install()`. A nested transaction (a savepoint, `useNestedTransactions`) writes on its own commit, or, with `OutboxConnections`, defers to the outermost one. `event_sourcing` is written by the transaction that raised the events either way: the rest of the outer one may restore the aggregate from it. Whatever is raised is written: an event whose name the registry does not hold makes a row the sweep cannot decode, which it defers and reports, while the transaction that raised it commits — the outbox exists so that business data does not depend on the delivery of its events
+- `OutboxConnections`: Optional `connectionAutoRegistration` of `Database.connect` that wraps every connection in an `OutboxConnection`, which keeps the deferred events like the database keeps rows: appended in order, cut by a rollback to a savepoint to what there was when it was set. Not bound to transaction objects on purpose: nested transactions of Exposed share a connection and the savepoint name, what a rollback discards is decided by time, not by the owner
 - `OutboxPublisher`: Background worker that sweeps the buckets of the `Outbox` and publishes events, it owns the transactions and the poll delay, not the outbox layout
 - `PublicEvent`: Wrapper of the event and its trace information for persistence; `id` and `createdAt` are the `eventId` and `timestamp` of the event
 - `OutboxBucketLock`: Non blocking per-bucket lock, `PostgresAdvisoryBucketLock` uses `pg_try_advisory_xact_lock`
@@ -184,7 +185,8 @@ OpenTelemetry implementation of `TelemetryService` for distributed tracing.
 ### Outbox Pattern Flow
 1. Application raises event during transaction: `eventStore.addEvent(event)`
 2. `OutboxInterceptor.beforeCommit()` persists events to `outbox_events` table atomically, each row
-   carrying the bucket of `partitionKey ?: eventId`
+   carrying the bucket of `partitionKey ?: eventId`. With `OutboxConnections` the
+   rows of nested transactions are written by the commit of the outermost one
 3. `OutboxPublisher` sweeps the buckets given by `Outbox.nextSweep()` in a background coroutine, that
    list starts at a position rotating by one on every call
 4. A transaction takes a non blocking advisory lock on the bucket and holds it for the whole batch,
@@ -320,7 +322,8 @@ val outboxPublisher = OutboxPublisher(database, publishers, outbox.also { it.ins
 
 W3C Trace Context flows end-to-end:
 1. `TelemetryService.traceInformation()` captures current context
-2. `OutboxInterceptor` stores in `outbox_events.trace_information`
+2. `OutboxInterceptor` stores in `outbox_events.trace_information`, captured on the commit of the
+   transaction that raised the event, nested or not
 3. `RabbitPublisher` embeds in message headers
 4. `ListenerDeliveryCallback` extracts and creates child spans
 

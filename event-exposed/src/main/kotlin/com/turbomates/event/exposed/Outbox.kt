@@ -30,6 +30,7 @@ import org.jetbrains.exposed.v1.jdbc.batchInsert
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.update
 import org.jetbrains.exposed.v1.json.jsonb
 
@@ -214,6 +215,10 @@ class Outbox(
      * Call it inside the transaction that raised them, which is what makes the events atomic with the
      * business data, [OutboxInterceptor] does it on commit.
      *
+     * With [OutboxConnections] the outbox rows of a nested transaction are deferred to the commit of the
+     * outermost one. The event sourcing rows are always written at once: the rest of the outer transaction
+     * may restore the aggregate from them.
+     *
      * Whatever is raised is written. An event whose name the registry does not hold makes a row the
      * sweep cannot decode, and that is left to the sweep: it defers the row and reports it through
      * [OutboxMetrics.eventFailed] and the error handler of the [OutboxPublisher], while the
@@ -224,7 +229,21 @@ class Outbox(
      * this is a module compiled without the processor.
      */
     fun batchEventsInsert(raised: List<PublicEvent>) {
-        eventsTable.batchInsert(raised) { event ->
+        if (raised.isNotEmpty()) write(defer(raised), history = raised)
+    }
+
+    /** @return the events to write now, see [OutboxConnection.defer]. */
+    private fun defer(raised: List<PublicEvent>): List<PublicEvent> {
+        // What is deferred is written by the interceptor of this outbox, with none there is nobody to do it.
+        if (JdbcTransaction.globalInterceptors.none { it is OutboxInterceptor && it.outbox === this }) return raised
+        val transaction = TransactionManager.current()
+        val connection = transaction.connection as? OutboxConnection<*> ?: return raised
+        generateSequence(transaction) { it.outerTransaction }.last().deferring = connection
+        return connection.defer(raised)
+    }
+
+    internal fun write(events: List<PublicEvent>, history: List<PublicEvent>) {
+        eventsTable.batchInsert(events) { event ->
             this[eventsTable.id] = event.id
             this[eventsTable.event] = event.original
             this[eventsTable.bucket] = bucket(event.original.partitionKey, event.id)
@@ -232,7 +251,7 @@ class Outbox(
             this[eventsTable.createdAt] = event.createdAt
             this[eventsTable.traceInformation] = event.traceInformation
         }
-        sourcingTable.batchInsert(raised.mapNotNull { it.original as? EventSourcingEvent }) { event ->
+        sourcingTable.batchInsert(history.mapNotNull { it.original as? EventSourcingEvent }) { event ->
             this[sourcingTable.id] = event.eventId
             this[sourcingTable.rootId] = event.rootId
             this[sourcingTable.event] = event
