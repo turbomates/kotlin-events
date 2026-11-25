@@ -12,9 +12,15 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.extension.kotlin.asContextElement
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import kotlin.test.assertFailsWith
 import kotlin.test.AfterTest
@@ -24,6 +30,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.milliseconds
 
 class OpenTelemetryServiceTest {
     private lateinit var spanExporter: InMemorySpanExporter
@@ -303,5 +310,51 @@ class OpenTelemetryServiceTest {
         val span = spanExporter.finishedSpanItems.single { it.name == "outbox poll" }
         assertEquals(parent.spanContext.spanId, span.parentSpanId)
         assertEquals(StatusCode.ERROR, span.status.statusCode)
+    }
+
+    @Test
+    fun `span records a timeout inside its block as a failure`() = runBlocking {
+        assertFailsWith<TimeoutCancellationException> {
+            service.span<Unit>("outbox poll") { withTimeout(10.milliseconds) { awaitCancellation() } }
+        }
+
+        assertTimeoutRecorded()
+    }
+
+    @Test
+    fun `link records a timeout inside its block as a failure`() = runBlocking {
+        assertFailsWith<TimeoutCancellationException> {
+            service.link(TraceInformation(null, null, null), "deferred command publish") {
+                withTimeout(10.milliseconds) { awaitCancellation() }
+            }
+        }
+
+        assertTimeoutRecorded()
+    }
+
+    @Test
+    fun `a cancelled worker is not a failure of its span`() = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val job = launch(Dispatchers.Default) {
+            service.span("outbox poll") {
+                started.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        started.await()
+        job.cancelAndJoin()
+
+        val span = spanExporter.finishedSpanItems.single()
+        assertEquals(StatusCode.UNSET, span.status.statusCode)
+        assertTrue(span.events.isEmpty())
+    }
+
+    private fun assertTimeoutRecorded() {
+        val span = spanExporter.finishedSpanItems.single()
+        assertEquals(StatusCode.ERROR, span.status.statusCode)
+        assertEquals(
+            TimeoutCancellationException::class.java.name,
+            span.events.single().attributes.get(AttributeKey.stringKey("exception.type"))
+        )
     }
 }

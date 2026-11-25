@@ -9,6 +9,8 @@ import io.opentelemetry.context.Context
 import io.opentelemetry.context.propagation.TextMapGetter
 import io.opentelemetry.extension.kotlin.asContextElement
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 class OpenTelemetry : Telemetry {
@@ -67,11 +69,12 @@ class OpenTelemetry : Telemetry {
     private suspend fun <T> Span.runCurrent(block: suspend () -> T): T =
         try {
             withContext(Context.current().with(this).asContextElement()) { runCatching { block() } }.getOrThrow()
-        } catch (cancellation: CancellationException) {
-            throw cancellation
         } catch (failure: Throwable) {
-            setStatus(StatusCode.ERROR, failure.message.orEmpty())
-            recordException(failure)
+            // a cancellation while the caller is still active, a timeout inside the block, is a failure
+            if (failure !is CancellationException || currentCoroutineContext().isActive) {
+                setStatus(StatusCode.ERROR, failure.message.orEmpty())
+                recordException(failure)
+            }
             throw failure
         } finally {
             end()
