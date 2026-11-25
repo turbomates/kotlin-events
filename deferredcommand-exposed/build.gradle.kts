@@ -15,7 +15,7 @@ dependencies {
     implementation(deps.slf4j)
     implementation(deps.bundles.exposed)
     implementation(deps.postgresql.jdbc)
-    implementation(project(":event"))
+    api(project(":event"))
     api(project(":deferredcommand"))
     testImplementation(kotlin("test"))
     testImplementation(deps.testcontainers.core)

@@ -58,6 +58,7 @@ dependencyResolutionManagement {
             library("ksp_api", "com.google.devtools.ksp", "symbol-processing-api").versionRef("ksp")
             library("opentelemetry_api", "io.opentelemetry", "opentelemetry-api").versionRef("opentelemetry")
             library("opentelemetry_context", "io.opentelemetry", "opentelemetry-context").versionRef("opentelemetry")
+            library("opentelemetry_extension_kotlin", "io.opentelemetry", "opentelemetry-extension-kotlin").versionRef("opentelemetry")
 
             plugin("test_logger", "com.adarshr.test-logger").versionRef("test_logger")
             plugin("detekt", "io.gitlab.arturbosch.detekt").versionRef("detekt")
@@ -78,7 +79,8 @@ dependencyResolutionManagement {
                 "opentelemetry",
                 listOf(
                     "opentelemetry_api",
-                    "opentelemetry_context"
+                    "opentelemetry_context",
+                    "opentelemetry_extension_kotlin"
                 )
             )
         }

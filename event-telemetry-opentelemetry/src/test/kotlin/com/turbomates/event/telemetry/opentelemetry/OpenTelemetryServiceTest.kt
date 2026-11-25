@@ -9,7 +9,14 @@ import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
 import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor
+import io.opentelemetry.api.common.AttributeKey
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.extension.kotlin.asContextElement
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
+import kotlin.test.assertFailsWith
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -123,7 +130,7 @@ class OpenTelemetryServiceTest {
         // Verify attributes
         assertEquals(
             "test.value",
-            childSpanData.attributes.get(io.opentelemetry.api.common.AttributeKey.stringKey("test.key")),
+            childSpanData.attributes.get(AttributeKey.stringKey("test.key")),
             "Child span should have custom attributes"
         )
     }
@@ -151,15 +158,15 @@ class OpenTelemetryServiceTest {
         assertEquals("multi-attr-span", spanData.name)
         assertEquals(
             "value1",
-            spanData.attributes.get(io.opentelemetry.api.common.AttributeKey.stringKey("attr1"))
+            spanData.attributes.get(AttributeKey.stringKey("attr1"))
         )
         assertEquals(
             "value2",
-            spanData.attributes.get(io.opentelemetry.api.common.AttributeKey.stringKey("attr2"))
+            spanData.attributes.get(AttributeKey.stringKey("attr2"))
         )
         assertEquals(
             "value3",
-            spanData.attributes.get(io.opentelemetry.api.common.AttributeKey.stringKey("attr3"))
+            spanData.attributes.get(AttributeKey.stringKey("attr3"))
         )
     }
 
@@ -265,5 +272,36 @@ class OpenTelemetryServiceTest {
         // Verify the span has the correct trace ID
         val spanData = finishedSpans.first()
         assertEquals("0af7651916cd43dd8448eb211c80319c", spanData.traceId)
+    }
+
+    @Test
+    fun `span stays current across a thread switch and ends with the block`() = runBlocking {
+        val seen = service.span("outbox poll", mapOf("outbox.bucket" to "3")) {
+            withContext(Dispatchers.IO) {
+                yield()
+                Span.current().spanContext.spanId
+            }
+        }
+
+        val span = spanExporter.finishedSpanItems.single()
+        assertEquals("outbox poll", span.name)
+        assertEquals(span.spanId, seen)
+        assertEquals("3", span.attributes.get(AttributeKey.stringKey("outbox.bucket")))
+        assertTrue(!span.parentSpanContext.isValid, "a span opened outside of any trace is a root")
+    }
+
+    @Test
+    fun `span is a child of the current span and records a failure`() = runBlocking {
+        val parent = GlobalOpenTelemetry.get().getTracer("test").spanBuilder("parent").startSpan()
+        withContext(Context.current().with(parent).asContextElement()) {
+            assertFailsWith<IllegalStateException> {
+                service.span<Unit>("outbox poll") { error("broken") }
+            }
+        }
+        parent.end()
+
+        val span = spanExporter.finishedSpanItems.single { it.name == "outbox poll" }
+        assertEquals(parent.spanContext.spanId, span.parentSpanId)
+        assertEquals(StatusCode.ERROR, span.status.statusCode)
     }
 }

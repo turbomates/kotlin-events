@@ -324,6 +324,12 @@ W3C Trace Context flows end-to-end:
 3. `RabbitPublisher` embeds in message headers
 4. `ListenerDeliveryCallback` extracts and creates child spans
 
+The publishers trace themselves through the same `Telemetry`: every poll runs inside `Telemetry.span`
+(`OutboxPublisher.POLL_SPAN`, `DEPTH_SPAN`), opened outside of its transaction so the commit is inside
+it, and every published event or command inside `Telemetry.link` with the trace stored in its row
+(`PUBLISH_SPAN`). What goes into the message headers is still the stored trace. An application that
+does not want idle polling recorded drops the poll roots in its sampler, by the name constants.
+
 ## Key Dependencies
 
 - kotlinx-serialization: Event serialization to JSON

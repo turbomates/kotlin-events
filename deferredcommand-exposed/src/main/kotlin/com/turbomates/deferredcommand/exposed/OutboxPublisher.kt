@@ -2,6 +2,8 @@ package com.turbomates.deferredcommand.exposed
 
 import com.turbomates.deferredcommand.Publisher
 import com.turbomates.deferredcommand.serializer.DeferredCommandSerializer
+import com.turbomates.event.NoOpTelemetry
+import com.turbomates.event.Telemetry
 import com.turbomates.event.TraceInformation
 import java.time.LocalDateTime
 import java.time.ZoneOffset
@@ -11,6 +13,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -27,6 +30,9 @@ import org.jetbrains.exposed.v1.json.jsonb
 import org.slf4j.LoggerFactory
 
 /**
+ * @param telemetry every poll runs inside a [POLL_SPAN], so its statements and commit make one trace
+ * instead of a root trace each, and every published command inside a [PUBLISH_SPAN] linked to the
+ * trace that scheduled it.
  * @param errorHandler called with the command a publisher failed on and the failure. The publisher
  * logs it and leaves the row for the next poll on its own, this only adds what the application does
  * on top — a report carrying the command, an alert. A handler that throws is logged and ignored. A
@@ -38,6 +44,7 @@ class OutboxPublisher(
     private val limit: Int = 1000,
     private val delay: Duration = Duration.parse("1s"),
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
+    private val telemetry: Telemetry = NoOpTelemetry(),
     private val errorHandler: (ScheduledDeferredCommand, Throwable) -> Unit = { _, _ -> }
 ) : CoroutineScope by CoroutineScope(dispatcher) {
     private val logger = LoggerFactory.getLogger(javaClass)
@@ -45,20 +52,26 @@ class OutboxPublisher(
     fun start() = launch {
         while (isActive) {
             try {
-                val commands = load(limit)
+                val commands = telemetry.span(POLL_SPAN) { load(limit) }
                 commands.forEach { command ->
                     try {
-                        publishers.forEach { publisher ->
-                            logger.debug("deferred command ${command.id} was published by ${publisher.javaClass.name} in worker")
-                            publisher.publish(command.original, command.traceInformation)
+                        val attributes = mapOf(COMMAND_ID_ATTRIBUTE to command.id.toString())
+                        telemetry.link(command.traceInformation ?: NO_TRACE, PUBLISH_SPAN, attributes) {
+                            publishers.forEach { publisher ->
+                                logger.debug("deferred command ${command.id} was published by ${publisher.javaClass.name} in worker")
+                                publisher.publish(command.original, command.traceInformation)
+                            }
+                            publish(command.id)
                         }
-                        publish(command.id)
                     } catch (ignore: Throwable) {
+                        // only the stop of the worker: a timeout inside a publisher is a cancellation too
+                        ensureActive()
                         logger.error("error while publishing deferred command ${command.id}", ignore)
                         report(command, ignore)
                     }
                 }
             } catch (ignore: Throwable) {
+                ensureActive()
                 logger.error("error while publishing deferred commands", ignore)
             } finally {
                 delay(delay)
@@ -96,6 +109,18 @@ class OutboxPublisher(
         transaction(database) {
             DeferredCommandsTable.deleteWhere { DeferredCommandsTable.id eq id }
         }
+    }
+
+    companion object {
+        /** Span of one poll: the read of the due commands and its commit. */
+        const val POLL_SPAN = "deferred command poll"
+
+        /** Root span of one published command, linked to the trace that scheduled it. */
+        const val PUBLISH_SPAN = "deferred command publish"
+
+        const val COMMAND_ID_ATTRIBUTE = "deferred_command.id"
+
+        private val NO_TRACE = TraceInformation(null, null, null)
     }
 }
 

@@ -2,6 +2,7 @@ package com.turbomates.event.exposed
 
 import com.turbomates.event.Event
 import com.turbomates.event.Publisher
+import com.turbomates.event.TraceInformation
 import java.util.UUID
 import kotlin.time.Duration
 import kotlinx.coroutines.CancellationException
@@ -34,6 +35,12 @@ import org.slf4j.LoggerFactory
  * continue. A worker therefore uses two connections while it publishes a bucket, plus a short
  * third one every [depthInterval] for the backlog gauge, the pool has to have room for them.
  *
+ * Every poll of a bucket and every depth measurement runs inside a span of the outbox telemetry
+ * ([POLL_SPAN], [DEPTH_SPAN]), so their statements and commits make one trace instead of a root
+ * trace each; an application that does not want idle polling traced drops these roots in its
+ * sampler. Every published event gets a trace of its own linked to the trace that raised it
+ * ([PUBLISH_SPAN], through [com.turbomates.event.Telemetry.link]), with its delete and commit inside.
+ *
  * @param outbox the same outbox the interceptor of this application writes to, it carries the
  * buckets, the batch limit, the bucket lock and the serialization of the rows.
  * @param delay pause between two sweeps.
@@ -63,7 +70,10 @@ class OutboxPublisher(
             launch {
                 while (isActive) {
                     try {
-                        metrics.outboxDepth(suspendTransaction(database) { outbox.depth() })
+                        val depth = outbox.telemetryService.span(DEPTH_SPAN) {
+                            suspendTransaction(database) { outbox.depth() }
+                        }
+                        metrics.outboxDepth(depth)
                     } catch (cancel: CancellationException) {
                         throw cancel
                     } catch (ignore: Throwable) {
@@ -109,9 +119,16 @@ class OutboxPublisher(
      * only waits, the events are published in transactions of their own, so nothing that happens to
      * one of them can undo the others. The lock lives until this transaction ends.
      *
+     * The span is opened outside the transaction, so the commit that releases the lock is inside it.
+     *
      * @return true when this worker owned the bucket, false when it is held by another one.
      */
-    private suspend fun publish(bucket: Int): Boolean = suspendTransaction(database) {
+    private suspend fun publish(bucket: Int): Boolean =
+        outbox.telemetryService.span(POLL_SPAN, mapOf(BUCKET_ATTRIBUTE to bucket.toString())) {
+            publishLocked(bucket)
+        }
+
+    private suspend fun publishLocked(bucket: Int): Boolean = suspendTransaction(database) {
         if (!outbox.tryLock(this, bucket)) {
             metrics.bucketSkipped(bucket)
             return@suspendTransaction false
@@ -149,9 +166,22 @@ class OutboxPublisher(
      * run: a publisher that throws rolls that deletion back and leaves the event for the next sweep,
      * and the row lock keeps a worker that lost the bucket from publishing the same event twice.
      *
+     * The link is opened outside the transaction, so the delete and the commit are inside it. The
+     * publishers still get the trace stored with the event, not the one of the link: the consumer
+     * links to the trace that raised the event.
+     *
      * @return false when the row is already gone.
      */
-    private suspend fun publish(event: Outbox.OutboxBatch.Item, original: Event): Boolean =
+    private suspend fun publish(event: Outbox.OutboxBatch.Item, original: Event): Boolean {
+        var published = false
+        val attributes = mapOf(EVENT_ID_ATTRIBUTE to event.id.toString(), EVENT_NAME_ATTRIBUTE to original.key.name)
+        outbox.telemetryService.link(event.traceInformation ?: NO_TRACE, PUBLISH_SPAN, attributes) {
+            published = publishDeleting(event, original)
+        }
+        return published
+    }
+
+    private suspend fun publishDeleting(event: Outbox.OutboxBatch.Item, original: Event): Boolean =
         inTopLevelSuspendTransaction(database, null, null, null) {
             if (!outbox.delete(event.id)) {
                 return@inTopLevelSuspendTransaction false
@@ -204,5 +234,22 @@ class OutboxPublisher(
         } catch (ignore: Throwable) {
             logger.error("outbox error handler of event ${failed.id} threw", ignore)
         }
+    }
+
+    companion object {
+        /** Span of one poll of a bucket: the lock, the read of the batch and the commit. */
+        const val POLL_SPAN = "outbox poll"
+
+        /** Span of one measurement of the backlog gauge. */
+        const val DEPTH_SPAN = "outbox depth"
+
+        /** Root span of one published event, linked to the trace that raised it. */
+        const val PUBLISH_SPAN = "outbox publish"
+
+        const val BUCKET_ATTRIBUTE = "outbox.bucket"
+        const val EVENT_ID_ATTRIBUTE = "outbox.event.id"
+        const val EVENT_NAME_ATTRIBUTE = "outbox.event.name"
+
+        private val NO_TRACE = TraceInformation(null, null, null)
     }
 }
