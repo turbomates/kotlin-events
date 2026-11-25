@@ -13,6 +13,7 @@ repositories {
 
 dependencies {
     implementation(deps.bundles.opentelemetry)
+    implementation(deps.coroutines)
     implementation(project(":event"))
     testImplementation(kotlin("test"))
     testImplementation("io.opentelemetry:opentelemetry-sdk:1.55.0")
